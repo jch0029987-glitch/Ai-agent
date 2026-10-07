@@ -16,6 +16,14 @@ jobs:
         with:
           submodules: recursive
 
+      - name: Ensure llama.cpp Exists
+        run: |
+          if [ ! -f "llama.cpp/CMakeLists.txt" ]; then
+            echo "llama.cpp not found or incomplete via submodules. Cloning directly..."
+            rm -rf llama.cpp
+            git clone https://github.com/ggml-org/llama.cpp.git llama.cpp
+          fi
+
       - name: Set up Ninja Build Tool
         uses: seanmiddleditch/gha-setup-ninja@v3
 
@@ -27,9 +35,7 @@ jobs:
           tar -xf vulkan_sdk.tar.xz -C external/vulkan-sdk
           rm vulkan_sdk.tar.xz
           
-          # Dynamically resolve and verify paths
           SDK_EXTRACTED_DIR=$(ls -d external/vulkan-sdk/*/ | head -n 1)
-          echo "VULKAN_SDK_DIR=${{ github.workspace }}/${SDK_EXTRACTED_DIR}x86_64" >> $GITHUB_ENV
           echo "Vulkan SDK successfully extracted to: ${{ github.workspace }}/${SDK_EXTRACTED_DIR}x86_64"
 
       - name: Clone SPIRV-Headers
