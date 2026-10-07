@@ -17,7 +17,6 @@ add_library(
 )
 
 find_library(log-lib log)
-find_library(atomic-lib atomic)
 
 target_include_directories(agent_jni PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/llama.cpp/include
@@ -30,6 +29,6 @@ target_link_libraries(
     ggml
     ggml-vulkan
     ${log-lib}
-    ${atomic-lib}
+    atomic
     m
 )
