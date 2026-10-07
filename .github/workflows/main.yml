@@ -18,18 +18,16 @@ jobs:
         with:
           ndk-version: r27c
 
-      - name: Install Complete Vulkan & Build Toolchain
+      - name: Install Official Vulkan SDK (for modern glslc)
         run: |
+          wget -qO - https://packages.lunarg.com/lunarg-signing-key-pub.asc | sudo apt-key add -
+          sudo wget -qO /etc/apt/sources.list.d/lunarg-vulkan-noble.list https://packages.lunarg.com/vulkan/lunarg-vulkan-noble.list
           sudo apt-get update
           sudo apt-get install -y \
             ninja-build \
             cmake \
-            glslang-tools \
-            glslang-dev \
-            spirv-tools \
-            spirv-headers \
-            libspirv-cross-c-shared-dev \
-            libvulkan-dev
+            swiftshader-vulkan \
+            vulkan-sdk
 
       - name: Configure CMake for Android ARM64 Vulkan (Shared)
         run: |
@@ -58,4 +56,3 @@ jobs:
         with:
           name: llama-jni-android-vulkan
           path: output/jniLibs/
-          
