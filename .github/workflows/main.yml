@@ -59,6 +59,7 @@ jobs:
             -DGGML_VULKAN=ON \
             -DSPIRV-Headers_DIR="${{ github.workspace }}/external/spirv-install/share/cmake/SPIRV-Headers" \
             -DVulkan_GLSLC_EXECUTABLE="$VULKAN_SDK_BIN/bin/glslc" \
+            -DVulkan_INCLUDE_DIR="$VULKAN_SDK_BIN/include" \
             -DCMAKE_BUILD_TYPE=Release
 
       - name: Build with Ninja
