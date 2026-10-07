@@ -2,6 +2,7 @@ cmake_minimum_required(VERSION 3.22.1)
 project("agent_jni")
 
 set(GGML_VULKAN ON CACHE BOOL "Enable Vulkan backend for GGML" FORCE)
+set(GGML_OPENMP OFF CACHE BOOL "Disable OpenMP to avoid missing libomp.so on Android" FORCE)
 set(BUILD_SHARED_LIBS OFF CACHE BOOL "Build static libraries for embedding" FORCE)
 
 if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/llama.cpp/CMakeLists.txt")
