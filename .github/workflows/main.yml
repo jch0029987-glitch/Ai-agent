@@ -41,8 +41,8 @@ jobs:
             -DGGML_VULKAN=ON \
             -DBUILD_SHARED_LIBS=ON \
             -DVulkan_GLSLC_EXECUTABLE=/usr/bin/glslc \
-            -DVulkan_INCLUDE_DIR=/usr/include \
-            -DCMAKE_FIND_ROOT_PATH_MODE_PACKAGE=BOTH
+            -DCMAKE_CXX_FLAGS="-I/usr/include" \
+            -DCMAKE_C_FLAGS="-I/usr/include"
 
       - name: Build Shared Libraries
         run: cmake --build build-android --config Release
