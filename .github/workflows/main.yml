@@ -1,4 +1,4 @@
-name: Build Android Llama.cpp with Vulkan
+name: Build Android Llama.cpp with Vulkan (Bulletproof)
 
 on:
   push:
@@ -11,29 +11,48 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout Repository
+      - name: Checkout Repository & Submodules
         uses: actions/checkout@v4
+        with:
+          submodules: recursive
 
-      - name: Add and Update llama.cpp Submodule
-        run: |
-          git submodule add https://github.com/ggml-org/llama.cpp.git llama.cpp || true
-          git submodule update --init --recursive
-
-      - name: Set up Ninja
+      - name: Set up Ninja Build Tool
         uses: seanmiddleditch/gha-setup-ninja@v3
 
-      - name: Install Host Vulkan Tools (glslc)
+      - name: Download and Extract Official LunarG Vulkan SDK
         run: |
-          sudo apt-get update
-          sudo apt-get install -y libvulkan-dev vulkan-tools glslang-tools spirv-tools
+          mkdir -p external/vulkan-sdk
+          echo "Downloading LunarG Vulkan SDK..."
+          wget -q https://sdk.lunarg.com/sdk/download/latest/linux/vulkan_sdk.tar.xz -O vulkan_sdk.tar.xz
+          tar -xf vulkan_sdk.tar.xz -C external/vulkan-sdk
+          rm vulkan_sdk.tar.xz
+          
+          # Dynamically resolve and verify paths
+          SDK_EXTRACTED_DIR=$(ls -d external/vulkan-sdk/*/ | head -n 1)
+          echo "VULKAN_SDK_DIR=${{ github.workspace }}/${SDK_EXTRACTED_DIR}x86_64" >> $GITHUB_ENV
+          echo "Vulkan SDK successfully extracted to: ${{ github.workspace }}/${SDK_EXTRACTED_DIR}x86_64"
 
-      - name: Download SPIRV-Headers
+      - name: Clone SPIRV-Headers
         run: |
-          git clone --depth 1 https://github.com/KhronosGroup/SPIRV-Headers.git external/SPIRV-Headers
+          if [ ! -d "external/SPIRV-Headers" ]; then
+            git clone --depth 1 https://github.com/KhronosGroup/SPIRV-Headers.git external/SPIRV-Headers
+          fi
+
+      - name: Verify Environment & Binaries
+        run: |
+          echo "Checking Android NDK..."
+          NDK_PATH=$(ls -d $ANDROID_SDK_ROOT/ndk/* | head -n 1)
+          echo "Using NDK at: $NDK_PATH"
+          
+          echo "Checking glslc compiler existence..."
+          SDK_DIR=$(ls -d external/vulkan-sdk/* | head -n 1)
+          ls -la "${{ github.workspace }}/$SDK_DIR/x86_64/bin/glslc"
 
       - name: Configure CMake for Android Vulkan
         run: |
           NDK_PATH=$(ls -d $ANDROID_SDK_ROOT/ndk/* | head -n 1)
+          SDK_DIR=$(ls -d external/vulkan-sdk/* | head -n 1)
+          VULKAN_SDK_BIN="${{ github.workspace }}/$SDK_DIR/x86_64"
           
           cmake -B build-android -S llama.cpp \
             -G Ninja \
@@ -42,6 +61,7 @@ jobs:
             -DANDROID_PLATFORM=android-28 \
             -DGGML_VULKAN=ON \
             -DSPIRV-Headers_DIR="${{ github.workspace }}/external/SPIRV-Headers/cmake" \
+            -DVulkan_GLSLC_EXECUTABLE="$VULKAN_SDK_BIN/bin/glslc" \
             -DCMAKE_BUILD_TYPE=Release
 
       - name: Build with Ninja
