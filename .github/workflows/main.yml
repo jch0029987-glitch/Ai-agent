@@ -57,7 +57,7 @@ jobs:
             -DANDROID_ABI=arm64-v8a \
             -DANDROID_PLATFORM=android-28 \
             -DGGML_VULKAN=ON \
-            -DCMAKE_PREFIX_PATH="${{ github.workspace }}/external/spirv-install" \
+            -DSPIRV-Headers_DIR="${{ github.workspace }}/external/spirv-install/share/cmake/SPIRV-Headers" \
             -DVulkan_GLSLC_EXECUTABLE="$VULKAN_SDK_BIN/bin/glslc" \
             -DCMAKE_BUILD_TYPE=Release
 
