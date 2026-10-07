@@ -13,8 +13,11 @@ jobs:
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
-        with:
-          submodules: recursive
+
+      - name: Add and Update llama.cpp Submodule
+        run: |
+          git submodule add https://github.com/ggml-org/llama.cpp.git llama.cpp || true
+          git submodule update --init --recursive
 
       - name: Set up Ninja
         uses: seanmiddleditch/gha-setup-ninja@v3
@@ -25,7 +28,6 @@ jobs:
 
       - name: Configure CMake for Android Vulkan
         run: |
-          # Dynamically finds the installed NDK directory inside the runner's Android SDK
           NDK_PATH=$(ls -d $ANDROID_SDK_ROOT/ndk/* | head -n 1)
           
           cmake -B build-android -S llama.cpp \
