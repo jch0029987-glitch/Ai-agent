@@ -28,7 +28,8 @@ jobs:
             cmake \
             vulkan-sdk \
             libvulkan-dev \
-            vulkan-headers
+            vulkan-headers \
+            shaderc
 
       - name: Copy Vulkan Headers to NDK Sysroot
         run: |
@@ -36,6 +37,9 @@ jobs:
 
       - name: Configure CMake for Android ARM64 Vulkan (Shared)
         run: |
+          GLSLC_BIN=$(which glslc || find /usr -name glslc 2>/dev/null | head -n 1)
+          echo "Using glslc binary at: $GLSLC_BIN"
+          
           cmake -B build-android \
             -G "Ninja" \
             -DCMAKE_TOOLCHAIN_FILE="$ANDROID_NDK_HOME/build/cmake/android.toolchain.cmake" \
@@ -44,10 +48,10 @@ jobs:
             -DCMAKE_BUILD_TYPE=Release \
             -DGGML_VULKAN=ON \
             -DBUILD_SHARED_LIBS=ON \
-            -DVulkan_GLSLC_EXECUTABLE=/usr/bin/glslc
+            -DVulkan_GLSLC_EXECUTABLE="$GLSLC_BIN"
 
       - name: Build Shared Libraries
-        run: cmake --build build-android --config Release
+        run: cmake --build build-android --config Release -j$(nproc)
 
       - name: Package .so Files
         run: |
