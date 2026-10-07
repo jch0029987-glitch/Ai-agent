@@ -27,7 +27,6 @@ jobs:
             glslang-tools \
             glslang-dev \
             spirv-tools \
-            libspirv-tools-dev \
             spirv-headers \
             libspirv-cross-c-shared-dev \
             libvulkan-dev
@@ -59,3 +58,4 @@ jobs:
         with:
           name: llama-jni-android-vulkan
           path: output/jniLibs/
+          
