@@ -9,10 +9,12 @@ add_library(
 
 find_library(log-lib log)
 
-# Use the headers we pulled into the workflow/repo
 include_directories(${CMAKE_CURRENT_SOURCE_DIR}/include)
 
 target_link_libraries(
     agent_jni
+    llama
+    ggml
+    ggml-vulkan
     ${log-lib}
 )
