@@ -21,7 +21,7 @@ Java_com_jeremy_ai_agent_LlamaBridge_nativeInitModel(JNIEnv* env, jobject thiz, 
     llama_backend_init();
 
     llama_model_params model_params = llama_model_default_params();
-    model_params.n_gpu_layers = 99; // Offload fully to Vulkan GPU backend
+    model_params.n_gpu_layers = 99; // Offload fully to Vulkan GPU backend for mobile acceleration
 
     g_model = llama_model_load_from_file(path, model_params);
     env->ReleaseStringUTFChars(model_path, path);
@@ -32,8 +32,8 @@ Java_com_jeremy_ai_agent_LlamaBridge_nativeInitModel(JNIEnv* env, jobject thiz, 
     }
 
     llama_context_params ctx_params = llama_context_default_params();
-    ctx_params.n_ctx = 2048;
-    ctx_params.n_batch = 512;
+    ctx_params.n_ctx = 2048;    // Balanced context window for memory conservation on mobile
+    ctx_params.n_batch = 512;   // Optimal batch size for mobile GPU processing
 
     g_ctx = llama_init_from_model(g_model, ctx_params);
     if (!g_ctx) {
@@ -129,7 +129,7 @@ Java_com_jeremy_ai_agent_LlamaBridge_nativeGenerate(JNIEnv* env, jobject thiz, j
     batch.seq_id = seq_id.data();
     batch.logits = logits.data();
 
-    // Evaluate prompt tokens
+    // Evaluate prompt tokens via Vulkan backend
     if (llama_decode(g_ctx, batch) != 0) {
         LOGE("Inference Error: llama_decode failed on prompt evaluation.");
         llama_sampler_free(smpl);
@@ -137,15 +137,15 @@ Java_com_jeremy_ai_agent_LlamaBridge_nativeGenerate(JNIEnv* env, jobject thiz, j
     }
 
     std::string generated_text = "";
-    int max_tokens_to_generate = 128;
+    int max_tokens_to_generate = 128; // Capped to prevent thermal throttling on mobile hardware
     int cur_pos = tokens.size();
 
     // Autoregressive generation loop
     for (int i = 0; i < max_tokens_to_generate; i++) {
         llama_token new_token_id = llama_sampler_sample(smpl, g_ctx, -1);
 
-        // Check for End of Generation (EOG)
-        if (llama_token_is_eog(g_model, new_token_id)) {
+        // Check for End of Generation using the correct vocabulary pointer
+        if (llama_token_is_eog(vocab, new_token_id)) {
             break;
         }
 
