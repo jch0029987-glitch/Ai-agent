@@ -29,7 +29,7 @@ jobs:
             spirv-tools \
             libspirv-tools-dev \
             spirv-headers \
-            libspirv-cross-core-dev \
+            libspirv-cross-c-shared-dev \
             libvulkan-dev
 
       - name: Configure CMake for Android ARM64 Vulkan (Shared)
@@ -42,7 +42,9 @@ jobs:
             -DCMAKE_BUILD_TYPE=Release \
             -DGGML_VULKAN=ON \
             -DBUILD_SHARED_LIBS=ON \
-            -DVulkan_GLSLC_EXECUTABLE=/usr/bin/glslc
+            -DVulkan_GLSLC_EXECUTABLE=/usr/bin/glslc \
+            -DCMAKE_PREFIX_PATH="/usr" \
+            -DCMAKE_FIND_ROOT_PATH_MODE_PACKAGE=BOTH
 
       - name: Build Shared Libraries
         run: cmake --build build-android --config Release
