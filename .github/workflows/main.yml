@@ -25,9 +25,12 @@ jobs:
 
       - name: Configure CMake for Android Vulkan
         run: |
-          cmake -B build-android -S . \
+          # Dynamically finds the installed NDK directory inside the runner's Android SDK
+          NDK_PATH=$(ls -d $ANDROID_SDK_ROOT/ndk/* | head -n 1)
+          
+          cmake -B build-android -S llama.cpp \
             -G Ninja \
-            -DCMAKE_TOOLCHAIN_FILE="$ANDROID_SDK_ROOT/ndk/27.3.13750724/build/cmake/android.toolchain.cmake" \
+            -DCMAKE_TOOLCHAIN_FILE="$NDK_PATH/build/cmake/android.toolchain.cmake" \
             -DANDROID_ABI=arm64-v8a \
             -DANDROID_PLATFORM=android-28 \
             -DGGML_VULKAN=ON \
