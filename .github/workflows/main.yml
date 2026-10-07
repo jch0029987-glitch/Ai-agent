@@ -1,4 +1,4 @@
-Name: Build Android Llama.cpp with Vulkan (Bulletproof)
+name: Build Android Llama.cpp with Vulkan (Bulletproof)
 
 on:
   workflow_dispatch:
