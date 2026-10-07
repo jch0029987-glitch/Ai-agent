@@ -14,14 +14,9 @@ jobs:
       - name: Checkout Repository
         uses: actions/checkout@v4
 
-      - name: Fetch llama.cpp Source & Headers for Linkage
+      - name: Fetch llama.cpp Source Tree
         run: |
-          git clone --depth 1 https://github.com/ggml-org/llama.cpp.git temp-llama
-          mkdir -p cpp/include
-          cp -r temp-llama/include/. cpp/include/
-          cp -r temp-llama/ggml/include/. cpp/include/
-          # Copy source/lib paths if building together or pointing cmake to them
-          rm -rf temp-llama
+          git clone --depth 1 https://github.com/ggml-org/llama.cpp.git cpp/llama.cpp
 
       - name: Set up Ninja Build Tool
         uses: seanmiddleditch/gha-setup-ninja@v3
