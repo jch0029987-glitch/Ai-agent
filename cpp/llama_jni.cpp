@@ -68,12 +68,12 @@ Java_com_jeremy_ai_agent_LlamaBridge_nativeGenerate(JNIEnv* env, jobject thiz, j
     }
 
     const char* prompt_str = env->GetStringUTFChars(prompt, nullptr);
-    LOGI("Executing diagnostic test generation for prompt: %s", prompt_str);
+    LOGI("Executing text generation for prompt: %s", prompt_str);
 
     const llama_vocab* vocab = llama_model_get_vocab(g_model);
     if (!vocab) {
         env->ReleaseStringUTFChars(prompt, prompt_str);
-        return env->NewStringUTF("Test Failed: Failed to retrieve model vocabulary.");
+        return env->NewStringUTF("Error: Failed to retrieve model vocabulary.");
     }
 
     bool add_bos = true;
@@ -81,7 +81,7 @@ Java_com_jeremy_ai_agent_LlamaBridge_nativeGenerate(JNIEnv* env, jobject thiz, j
     
     if (n_tokens_required <= 0) {
         env->ReleaseStringUTFChars(prompt, prompt_str);
-        return env->NewStringUTF("Test Failed: Tokenizer length calculation returned 0 or negative.");
+        return env->NewStringUTF("Error: Tokenizer length calculation failed.");
     }
 
     std::vector<llama_token> tokens(n_tokens_required);
@@ -89,14 +89,17 @@ Java_com_jeremy_ai_agent_LlamaBridge_nativeGenerate(JNIEnv* env, jobject thiz, j
     
     if (actual_tokens < 0) {
         env->ReleaseStringUTFChars(prompt, prompt_str);
-        return env->NewStringUTF("Test Failed: Tokenization process failed.");
+        return env->NewStringUTF("Error: Tokenization process failed.");
     }
     tokens.resize(actual_tokens);
     env->ReleaseStringUTFChars(prompt, prompt_str);
 
-    LOGI("Tokenization successful. Generated %d tokens.", actual_tokens);
+    // Initialize sampler chain (Greedy / temperature decoding)
+    auto sparams = llama_sampler_chain_default_params();
+    llama_sampler* smpl = llama_sampler_chain_init(sparams);
+    llama_sampler_chain_add(smpl, llama_sampler_init_greedy());
 
-    // Construct batch manually using standard llama_batch structure fields to avoid missing linker symbols
+    // Setup initial prompt evaluation batch
     llama_batch batch = {
         /*n_tokens       */ static_cast<int32_t>(tokens.size()),
         /*token          */ tokens.data(),
@@ -107,7 +110,6 @@ Java_com_jeremy_ai_agent_LlamaBridge_nativeGenerate(JNIEnv* env, jobject thiz, j
         /*logits         */ nullptr
     };
 
-    // Allocate internal arrays for the batch manually
     std::vector<llama_pos> pos(tokens.size());
     std::vector<int32_t> n_seq_id(tokens.size(), 1);
     std::vector<llama_seq_id*> seq_id(tokens.size());
@@ -118,7 +120,7 @@ Java_com_jeremy_ai_agent_LlamaBridge_nativeGenerate(JNIEnv* env, jobject thiz, j
         pos[i] = static_cast<llama_pos>(i);
         seq_id[i] = single_seq_id.data();
         if (i == tokens.size() - 1) {
-            logits[i] = 1; // Request logits on final token
+            logits[i] = 1; // Request logits on final prompt token
         }
     }
 
@@ -127,16 +129,60 @@ Java_com_jeremy_ai_agent_LlamaBridge_nativeGenerate(JNIEnv* env, jobject thiz, j
     batch.seq_id = seq_id.data();
     batch.logits = logits.data();
 
+    // Evaluate prompt tokens
     if (llama_decode(g_ctx, batch) != 0) {
-        LOGE("Test Failed: llama_decode execution returned non-zero error code.");
-        return env->NewStringUTF("Test Failed: Inference decode step failed on GPU/CPU.");
+        LOGE("Inference Error: llama_decode failed on prompt evaluation.");
+        llama_sampler_free(smpl);
+        return env->NewStringUTF("Error: Prompt evaluation decode failed.");
     }
 
-    std::string result = "[Test Passed: Tokenized " + std::to_string(actual_tokens) + 
-                         " tokens, executed Vulkan batch decode successfully.]";
+    std::string generated_text = "";
+    int max_tokens_to_generate = 128;
+    int cur_pos = tokens.size();
 
-    LOGI("Diagnostic run completed successfully.");
-    return env->NewStringUTF(result.c_str());
+    // Autoregressive generation loop
+    for (int i = 0; i < max_tokens_to_generate; i++) {
+        llama_token new_token_id = llama_sampler_sample(smpl, g_ctx, -1);
+
+        // Check for End of Generation (EOG)
+        if (llama_token_is_eog(g_model, new_token_id)) {
+            break;
+        }
+
+        // Convert token ID to text piece
+        char buf[256];
+        int n = llama_token_to_piece(vocab, new_token_id, buf, sizeof(buf), 0, true);
+        if (n > 0) {
+            generated_text.append(buf, n);
+        }
+
+        // Prepare single-token batch for the next step
+        batch.n_tokens = 1;
+        batch.token = &new_token_id;
+        
+        llama_pos p = cur_pos;
+        batch.pos = &p;
+        
+        int32_t ns = 1;
+        batch.n_seq_id = &ns;
+        
+        llama_seq_id* sid_ptr = single_seq_id.data();
+        batch.seq_id = &sid_ptr;
+        
+        int8_t log = 1;
+        batch.logits = &log;
+
+        cur_pos++;
+
+        if (llama_decode(g_ctx, batch) != 0) {
+            LOGE("Inference Error: failed to decode generated token step.");
+            break;
+        }
+    }
+
+    llama_sampler_free(smpl);
+    LOGI("Generation complete. Output length: %zu chars.", generated_text.length());
+    return env->NewStringUTF(generated_text.c_str());
 }
 
 }
