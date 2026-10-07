@@ -23,7 +23,6 @@ Java_com_jeremy_ai_agent_LlamaBridge_nativeInitModel(JNIEnv* env, jobject thiz, 
     llama_model_params model_params = llama_model_default_params();
     model_params.n_gpu_layers = 99; // Offload fully to Vulkan GPU backend
 
-    // Updated to modern non-deprecated API
     g_model = llama_model_load_from_file(path, model_params);
     env->ReleaseStringUTFChars(model_path, path);
 
@@ -36,7 +35,6 @@ Java_com_jeremy_ai_agent_LlamaBridge_nativeInitModel(JNIEnv* env, jobject thiz, 
     ctx_params.n_ctx = 2048;
     ctx_params.n_batch = 512;
 
-    // Updated to modern non-deprecated API
     g_ctx = llama_init_from_model(g_model, ctx_params);
     if (!g_ctx) {
         LOGE("CRITICAL: Failed to create llama context.");
@@ -72,14 +70,12 @@ Java_com_jeremy_ai_agent_LlamaBridge_nativeGenerate(JNIEnv* env, jobject thiz, j
     const char* prompt_str = env->GetStringUTFChars(prompt, nullptr);
     LOGI("Executing diagnostic test generation for prompt: %s", prompt_str);
 
-    // Fetch vocabulary from the model for modern tokenization functions
     const llama_vocab* vocab = llama_model_get_vocab(g_model);
     if (!vocab) {
         env->ReleaseStringUTFChars(prompt, prompt_str);
         return env->NewStringUTF("Test Failed: Failed to retrieve model vocabulary.");
     }
 
-    // 1. Tokenization using modern vocabulary-based API
     bool add_bos = true;
     int n_tokens_required = -llama_tokenize(vocab, prompt_str, strlen(prompt_str), nullptr, 0, add_bos, true);
     
@@ -100,22 +96,38 @@ Java_com_jeremy_ai_agent_LlamaBridge_nativeGenerate(JNIEnv* env, jobject thiz, j
 
     LOGI("Tokenization successful. Generated %d tokens.", actual_tokens);
 
-    // 2. Modern batch construction and population
-    llama_batch batch = llama_batch_init(512, 0, 1);
-    batch.n_tokens = tokens.size();
+    // Construct batch manually using standard llama_batch structure fields to avoid missing linker symbols
+    llama_batch batch = {
+        /*n_tokens       */ static_cast<int32_t>(tokens.size()),
+        /*token          */ tokens.data(),
+        /*embd           */ nullptr,
+        /*pos            */ nullptr,
+        /*n_seq_id       */ nullptr,
+        /*seq_id         */ nullptr,
+        /*logits         */ nullptr
+    };
+
+    // Allocate internal arrays for the batch manually
+    std::vector<llama_pos> pos(tokens.size());
+    std::vector<int32_t> n_seq_id(tokens.size(), 1);
+    std::vector<llama_seq_id*> seq_id(tokens.size());
+    std::vector<llama_seq_id> single_seq_id = {0};
+    std::vector<int8_t> logits(tokens.size(), 0);
+
     for (size_t i = 0; i < tokens.size(); i++) {
-        batch.token[i] = tokens[i];
-        batch.pos[i] = i;
-        batch.n_seq_id[i] = 1;
-        batch.seq_id[i][0] = 0;
-        batch.logits[i] = (i == tokens.size() - 1); // Request logits only for the last token
+        pos[i] = static_cast<llama_pos>(i);
+        seq_id[i] = single_seq_id.data();
+        if (i == tokens.size() - 1) {
+            logits[i] = 1; // Request logits on final token
+        }
     }
 
-    // Clear KV cache using modern memory manager API if needed, or skip if handled by context free
-    // Note: If kv cache clear is needed across turns, use standard context reset patterns.
+    batch.pos = pos.data();
+    batch.n_seq_id = n_seq_id.data();
+    batch.seq_id = seq_id.data();
+    batch.logits = logits.data();
 
     if (llama_decode(g_ctx, batch) != 0) {
-        llama_batch_free(batch);
         LOGE("Test Failed: llama_decode execution returned non-zero error code.");
         return env->NewStringUTF("Test Failed: Inference decode step failed on GPU/CPU.");
     }
@@ -123,7 +135,6 @@ Java_com_jeremy_ai_agent_LlamaBridge_nativeGenerate(JNIEnv* env, jobject thiz, j
     std::string result = "[Test Passed: Tokenized " + std::to_string(actual_tokens) + 
                          " tokens, executed Vulkan batch decode successfully.]";
 
-    llama_batch_free(batch);
     LOGI("Diagnostic run completed successfully.");
     return env->NewStringUTF(result.c_str());
 }
