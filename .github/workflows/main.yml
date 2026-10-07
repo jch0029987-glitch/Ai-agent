@@ -1,65 +1,47 @@
-name: Compile Llama.cpp Shared Libraries for Android (Vulkan)
+name: Build Android Llama.cpp with Vulkan
 
 on:
-  workflow_dispatch:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
 
 jobs:
-  build:
+  build-android:
     runs-on: ubuntu-latest
+
     steps:
-      - name: Checkout Llama.cpp
+      - name: Checkout Repository
         uses: actions/checkout@v4
         with:
-          repository: ggml-org/llama.cpp
           submodules: recursive
 
-      - name: Setup Android NDK
-        uses: nttld/setup-ndk@v1
-        with:
-          ndk-version: r27c
+      - name: Set up Ninja
+        uses: seanmiddleditch/gha-setup-ninja@v3
 
-      - name: Install Vulkan SDK, Headers, and glslc
+      - name: Download SPIRV-Headers
         run: |
-          wget -qO- https://packages.lunarg.com/lunarg-signing-key-pub.asc | sudo tee /etc/apt/trusted.gpg.d/lunarg.asc
-          sudo wget -qO /etc/apt/sources.list.d/lunarg-vulkan-noble.list http://packages.lunarg.com/vulkan/lunarg-vulkan-noble.list
-          sudo apt-get update
-          sudo apt-get install -y \
-            ninja-build \
-            cmake \
-            vulkan-sdk \
-            libvulkan-dev \
-            vulkan-headers \
-            shaderc
+          git clone --depth 1 https://github.com/KhronosGroup/SPIRV-Headers.git external/SPIRV-Headers
 
-      - name: Copy Vulkan Headers to NDK Sysroot
+      - name: Configure CMake for Android Vulkan
         run: |
-          sudo cp -r /usr/include/vulkan "$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/include/"
-
-      - name: Configure CMake for Android ARM64 Vulkan (Shared)
-        run: |
-          GLSLC_BIN=$(which glslc || find /usr -name glslc 2>/dev/null | head -n 1)
-          echo "Using glslc binary at: $GLSLC_BIN"
-          
-          cmake -B build-android \
-            -G "Ninja" \
-            -DCMAKE_TOOLCHAIN_FILE="$ANDROID_NDK_HOME/build/cmake/android.toolchain.cmake" \
+          cmake -B build-android -S . \
+            -G Ninja \
+            -DCMAKE_TOOLCHAIN_FILE="$ANDROID_SDK_ROOT/ndk/27.3.13750724/build/cmake/android.toolchain.cmake" \
             -DANDROID_ABI=arm64-v8a \
             -DANDROID_PLATFORM=android-28 \
-            -DCMAKE_BUILD_TYPE=Release \
             -DGGML_VULKAN=ON \
-            -DBUILD_SHARED_LIBS=ON \
-            -DVulkan_GLSLC_EXECUTABLE="$GLSLC_BIN"
+            -DSPIRV-Headers_DIR="${{ github.workspace }}/external/SPIRV-Headers/cmake" \
+            -DCMAKE_BUILD_TYPE=Release
 
-      - name: Build Shared Libraries
-        run: cmake --build build-android --config Release -j$(nproc)
-
-      - name: Package .so Files
+      - name: Build with Ninja
         run: |
-          mkdir -p output/jniLibs/arm64-v8a
-          find build-android -name "*.so" -exec cp {} output/jniLibs/arm64-v8a/ \;
+          cmake --build build-android --config Release
 
-      - name: Upload JNI Artifacts
+      - name: Upload Build Artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: llama-jni-android-vulkan
-          path: output/jniLibs/
+          name: android-vulkan-libs
+          path: |
+            build-android/**/*.so
+            build-android/**/libllama*
