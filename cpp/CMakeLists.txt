@@ -1,10 +1,13 @@
 cmake_minimum_required(VERSION 3.22.1)
 project("agent_jni")
 
-# Bring in llama.cpp source subdirectory if present, or link via targets
-# Ensure llama.cpp is cloned or available in the repo tree
-if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/../llama.cpp/CMakeLists.txt")
-    add_subdirectory("../llama.cpp" "${CMAKE_CURRENT_BINARY_DIR}/llama")
+set(GGML_VULKAN ON CACHE BOOL "Enable Vulkan backend for GGML" FORCE)
+set(BUILD_SHARED_LIBS OFF CACHE BOOL "Build static libraries for embedding" FORCE)
+
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/llama.cpp/CMakeLists.txt")
+    add_subdirectory("llama.cpp")
+else()
+    message(FATAL_ERROR "llama.cpp source directory not found in cpp/llama.cpp")
 endif()
 
 add_library(
@@ -15,9 +18,10 @@ add_library(
 
 find_library(log-lib log)
 
-include_directories(${CMAKE_CURRENT_SOURCE_DIR}/include)
-include_directories(${CMAKE_CURRENT_SOURCE_DIR}/../llama.cpp/include)
-include_directories(${CMAKE_CURRENT_SOURCE_DIR}/../llama.cpp/ggml/include)
+target_include_directories(agent_jni PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/llama.cpp/include
+    ${CMAKE_CURRENT_SOURCE_DIR}/llama.cpp/ggml/include
+)
 
 target_link_libraries(
     agent_jni
@@ -25,4 +29,6 @@ target_link_libraries(
     ggml
     ggml-vulkan
     ${log-lib}
+    latomic
+    m
 )
