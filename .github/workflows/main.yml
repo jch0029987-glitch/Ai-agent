@@ -22,14 +22,10 @@ jobs:
       - name: Set up Ninja
         uses: seanmiddleditch/gha-setup-ninja@v3
 
-      - name: Download and Extract Official Vulkan SDK (for modern glslc)
+      - name: Install Host Vulkan Tools (glslc)
         run: |
-          mkdir -p external/vulkan-sdk
-          wget -q https://sdk.lunarg.com/sdk/download/latest/linux/vulkan_sdk.tar.xz -O vulkan_sdk.tar.xz
-          tar -xf vulkan_sdk.tar.xz -C external/vulkan-sdk
-          # Find the extracted folder name dynamically (e.g., 1.x.xx.x)
-          SDK_DIR=$(ls -d external/vulkan-sdk/* | head -n 1)
-          echo "VULKAN_SDK_PATH=$SDK_DIR/x86_64" >> $GITHUB_ENV
+          sudo apt-get update
+          sudo apt-get install -y libvulkan-dev vulkan-tools glslang-tools spirv-tools
 
       - name: Download SPIRV-Headers
         run: |
@@ -46,7 +42,6 @@ jobs:
             -DANDROID_PLATFORM=android-28 \
             -DGGML_VULKAN=ON \
             -DSPIRV-Headers_DIR="${{ github.workspace }}/external/SPIRV-Headers/cmake" \
-            -DGLSLC_EXECUTABLE="$VULKAN_SDK_PATH/bin/glslc" \
             -DCMAKE_BUILD_TYPE=Release
 
       - name: Build with Ninja
