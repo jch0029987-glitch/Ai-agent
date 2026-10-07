@@ -19,8 +19,10 @@ jobs:
           ndk-version: r26c
           android-version: 34
 
-      - name: Install Build Tools
-        run: sudo apt-get update && sudo apt-get install -y ninja-build cmake
+      - name: Install Build Tools & Vulkan Compiler
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build cmake glslang-tools
 
       - name: Configure CMake for Android ARM64 Vulkan (Shared)
         run: |
