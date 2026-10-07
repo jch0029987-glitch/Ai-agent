@@ -53,11 +53,12 @@ jobs:
             -DSPIRV-Headers_DIR="${{ github.workspace }}/cpp/external/spirv-install/share/cmake/SPIRV-Headers" \
             -DVulkan_GLSLC_EXECUTABLE="$VULKAN_SDK_BIN/bin/glslc" \
             -DVulkan_INCLUDE_DIR="$VULKAN_SDK_BIN/include" \
-            -DCMAKE_BUILD_TYPE=Release
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_VERBOSE_MAKEFILE=ON
 
-      - name: Build JNI Bridge with Ninja
+      - name: Build JNI Bridge with Ninja (Throttled & Verbose)
         run: |
-          cmake --build build-jni --config Release
+          cmake --build build-jni --config Release --verbose -- -j2
 
       - name: Upload JNI Artifact
         uses: actions/upload-artifact@v4
