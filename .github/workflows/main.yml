@@ -30,6 +30,10 @@ jobs:
             libvulkan-dev \
             vulkan-headers
 
+      - name: Copy Vulkan Headers to NDK Sysroot
+        run: |
+          sudo cp -r /usr/include/vulkan "$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/include/"
+
       - name: Configure CMake for Android ARM64 Vulkan (Shared)
         run: |
           cmake -B build-android \
@@ -40,9 +44,7 @@ jobs:
             -DCMAKE_BUILD_TYPE=Release \
             -DGGML_VULKAN=ON \
             -DBUILD_SHARED_LIBS=ON \
-            -DVulkan_GLSLC_EXECUTABLE=/usr/bin/glslc \
-            -DCMAKE_CXX_FLAGS="-I/usr/include" \
-            -DCMAKE_C_FLAGS="-I/usr/include"
+            -DVulkan_GLSLC_EXECUTABLE=/usr/bin/glslc
 
       - name: Build Shared Libraries
         run: cmake --build build-android --config Release
