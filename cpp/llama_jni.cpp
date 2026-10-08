@@ -20,9 +20,8 @@ Java_com_jeremy_ai_agent_LlamaBridge_nativeInitModel(JNIEnv* env, jobject thiz, 
 
     llama_backend_init();
 
-    // Pure CPU configuration (bypasses Vulkan GPU backend completely)
     llama_model_params model_params = llama_model_default_params();
-    model_params.n_gpu_layers = 0; // Force 0 layers on GPU
+    model_params.n_gpu_layers = 0; 
 
     g_model = llama_model_load_from_file(path, model_params);
     env->ReleaseStringUTFChars(model_path, path);
@@ -32,15 +31,13 @@ Java_com_jeremy_ai_agent_LlamaBridge_nativeInitModel(JNIEnv* env, jobject thiz, 
         return JNI_FALSE;
     }
 
-    // Context tuning optimized for fast multi-threaded CPU execution on Tensor G4
     llama_context_params ctx_params = llama_context_default_params();
-    ctx_params.n_ctx = 2048;                // 2K context window
-    ctx_params.n_batch = 512;               // Batch token processing block
-    ctx_params.n_threads = 4;               // Lock generation to 4 performance cores
-    ctx_params.n_threads_batch = 4;         // Match batch threads for parallel prefill
+    ctx_params.n_ctx = 2048;                
+    ctx_params.n_batch = 512;               
+    ctx_params.n_threads = 4;               
+    ctx_params.n_threads_batch = 4;         
     
-    // Memory Bandwidth Optimizations
-    ctx_params.type_k = GGML_TYPE_F16;      // FP16 KV cache
+    ctx_params.type_k = GGML_TYPE_F16;      
     ctx_params.type_v = GGML_TYPE_F16;
 
     g_ctx = llama_init_from_model(g_model, ctx_params);
@@ -70,17 +67,19 @@ Java_com_jeremy_ai_agent_LlamaBridge_nativeReleaseModel(JNIEnv* env, jobject thi
 }
 
 JNIEXPORT jstring JNICALL
-Java_com_jeremy_ai_agent_LlamaBridge_nativeGenerate(JNIEnv* env, jobject thiz, jstring prompt) {
+Java_com_jeremy_ai_agent_LlamaBridge_nativeGenerateWithGrammar(JNIEnv* env, jobject thiz, jstring prompt, jstring grammar) {
     if (!g_model || !g_ctx) {
         return env->NewStringUTF("Error: Engine offline or uninitialized.");
     }
 
     const char* prompt_str = env->GetStringUTFChars(prompt, nullptr);
-    LOGI("Executing text generation for prompt: %s", prompt_str);
+    const char* grammar_str = env->GetStringUTFChars(grammar, nullptr);
+    LOGI("Executing grammar-constrained generation.");
 
     const llama_vocab* vocab = llama_model_get_vocab(g_model);
     if (!vocab) {
         env->ReleaseStringUTFChars(prompt, prompt_str);
+        env->ReleaseStringUTFChars(grammar, grammar_str);
         return env->NewStringUTF("Error: Failed to retrieve model vocabulary.");
     }
 
@@ -89,6 +88,7 @@ Java_com_jeremy_ai_agent_LlamaBridge_nativeGenerate(JNIEnv* env, jobject thiz, j
     
     if (n_tokens_required <= 0) {
         env->ReleaseStringUTFChars(prompt, prompt_str);
+        env->ReleaseStringUTFChars(grammar, grammar_str);
         return env->NewStringUTF("Error: Tokenizer length calculation failed.");
     }
 
@@ -97,13 +97,25 @@ Java_com_jeremy_ai_agent_LlamaBridge_nativeGenerate(JNIEnv* env, jobject thiz, j
     
     if (actual_tokens < 0) {
         env->ReleaseStringUTFChars(prompt, prompt_str);
+        env->ReleaseStringUTFChars(grammar, grammar_str);
         return env->NewStringUTF("Error: Tokenization process failed.");
     }
     tokens.resize(actual_tokens);
     env->ReleaseStringUTFChars(prompt, prompt_str);
 
+    // 1. Initialize the GBNF grammar parser (root rule is typically "root")
+    llama_grammar* lg = llama_grammar_init(grammar_str, "root");
+    env->ReleaseStringUTFChars(grammar, grammar_str);
+
+    if (!lg) {
+        return env->NewStringUTF("Error: Failed to initialize GBNF grammar.");
+    }
+
     auto sparams = llama_sampler_chain_default_params();
     llama_sampler* smpl = llama_sampler_chain_init(sparams);
+    
+    // 2. Add grammar constraints and greedy sampling to the chain
+    llama_sampler_chain_add(smpl, llama_sampler_init_grammar(g_model, grammar_str, "root"));
     llama_sampler_chain_add(smpl, llama_sampler_init_greedy());
 
     llama_batch batch = {
@@ -137,6 +149,7 @@ Java_com_jeremy_ai_agent_LlamaBridge_nativeGenerate(JNIEnv* env, jobject thiz, j
 
     if (llama_decode(g_ctx, batch) != 0) {
         LOGE("Inference Error: llama_decode failed on prompt evaluation.");
+        llama_grammar_free(lg);
         llama_sampler_free(smpl);
         return env->NewStringUTF("Error: Prompt evaluation decode failed.");
     }
@@ -157,6 +170,9 @@ Java_com_jeremy_ai_agent_LlamaBridge_nativeGenerate(JNIEnv* env, jobject thiz, j
         if (n > 0) {
             generated_text.append(buf, n);
         }
+
+        // Apply accepted token back to the grammar filter state machine
+        // (Note: llama.cpp's sampler chain handles grammar state acceptance automatically when sampling)
 
         batch.n_tokens = 1;
         batch.token = &new_token_id;
@@ -181,8 +197,9 @@ Java_com_jeremy_ai_agent_LlamaBridge_nativeGenerate(JNIEnv* env, jobject thiz, j
         }
     }
 
+    llama_grammar_free(lg);
     llama_sampler_free(smpl);
-    LOGI("Generation complete. Output length: %zu chars.", generated_text.length());
+    LOGI("Grammar generation complete. Output length: %zu chars.", generated_text.length());
     return env->NewStringUTF(generated_text.c_str());
 }
 
