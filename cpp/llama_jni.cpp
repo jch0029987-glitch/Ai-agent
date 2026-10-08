@@ -38,7 +38,6 @@ Java_com_jeremy_ai_agent_LlamaBridge_nativeInitModel(JNIEnv* env, jobject thiz, 
     ctx_params.n_batch = 512;               // Full batch token processing block
     ctx_params.n_threads = 4;               // Lock generation to 4 performance cores to prevent throttling
     ctx_params.n_threads_batch = 4;         // Match batch threads for high-speed prompt ingestion
-    ctx_params.use_flash_attn = true;       // Enable flash attention for memory reduction
 
     g_ctx = llama_init_from_model(g_model, ctx_params);
     if (!g_ctx) {
@@ -139,13 +138,14 @@ Java_com_jeremy_ai_agent_LlamaBridge_nativeGenerate(JNIEnv* env, jobject thiz, j
     }
 
     std::string generated_text = "";
-    int max_tokens_to_generate = 32; // Tight token cap ensuring instant flat-line completion
+    int max_tokens_to_generate = 32; 
     int cur_pos = tokens.size();
 
     for (int i = 0; i < max_tokens_to_generate; i++) {
         llama_token new_token_id = llama_sampler_sample(smpl, g_ctx, -1);
 
-        if (llama_token_is_eog(vocab, new_token_id)) {
+        // Updated to use the non-deprecated vocab-level EOG check
+        if (llama_vocab_is_eog(vocab, new_token_id)) {
             break;
         }
 
