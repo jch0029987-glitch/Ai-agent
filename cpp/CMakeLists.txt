@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.22.1)
 project("agent_jni")
 
-set(GGML_VULKAN ON CACHE BOOL "Enable Vulkan backend for GGML" FORCE)
+set(GGML_VULKAN OFF CACHE BOOL "Disable Vulkan backend" FORCE)
 set(GGML_OPENMP OFF CACHE BOOL "Disable OpenMP to avoid missing libomp.so on Android" FORCE)
 set(BUILD_SHARED_LIBS OFF CACHE BOOL "Build static libraries for embedding" FORCE)
 
@@ -28,7 +28,6 @@ target_link_libraries(
     agent_jni
     llama
     ggml
-    ggml-vulkan
     ${log-lib}
     atomic
     m
