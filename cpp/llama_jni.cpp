@@ -34,14 +34,15 @@ Java_com_jeremy_ai_agent_LlamaBridge_nativeInitModel(JNIEnv* env, jobject thiz, 
 
     // Context tuning optimized for fast single-shot task execution on Pixel 9
     llama_context_params ctx_params = llama_context_default_params();
-    ctx_params.n_ctx = 2048;                // Bumped to 2K to prevent context boundary faults
-    ctx_params.n_batch = 512;               // Full batch token processing block
-    ctx_params.n_threads = 4;               // Lock generation to 4 performance cores to prevent throttling
-    ctx_params.n_threads_batch = 4;         // Match batch threads for high-speed prompt ingestion
+    ctx_params.n_ctx = 2048;                // Keep context tightly bounded for fast agent turns
+    ctx_params.n_batch = 512;               // Match batch size to tensor processing limits
+    ctx_params.n_threads = 4;               // Lock generation to 4 cores to prevent thermal throttling
+    ctx_params.n_threads_batch = 4;         // Match batch threads for parallel prompt ingestion
     
-    // Enable FP16 KV cache for mobile memory bandwidth optimization
-    ctx_params.type_k = GGML_TYPE_F16;
+    // Memory Bandwidth Optimizations for Tensor G4
+    ctx_params.type_k = GGML_TYPE_F16;      // FP16 KV cache preserves precision without heavy bandwidth cost
     ctx_params.type_v = GGML_TYPE_F16;
+    ctx_params.flash_attn = true;           // Crucial: cuts down memory overhead during long token generation
 
     g_ctx = llama_init_from_model(g_model, ctx_params);
     if (!g_ctx) {
@@ -51,7 +52,7 @@ Java_com_jeremy_ai_agent_LlamaBridge_nativeInitModel(JNIEnv* env, jobject thiz, 
         return JNI_FALSE;
     }
 
-    LOGI("Success: Pixel 9 Tensor G4 Vulkan-accelerated context active.");
+    LOGI("Success: Pixel 9 Tensor G4 Vulkan-accelerated context active with Flash Attention.");
     return JNI_TRUE;
 }
 
