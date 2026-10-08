@@ -16,12 +16,13 @@ extern "C" {
 JNIEXPORT jboolean JNICALL
 Java_com_jeremy_ai_agent_LlamaBridge_nativeInitModel(JNIEnv* env, jobject thiz, jstring model_path) {
     const char* path = env->GetStringUTFChars(model_path, nullptr);
-    LOGI("Initializing llama backend and loading checkpoint for Pixel 9 Tensor G4: %s", path);
+    LOGI("Initializing llama backend for Pixel 9 Tensor G4: %s", path);
 
     llama_backend_init();
 
+    // Tensor G4 maximum layer offload configuration
     llama_model_params model_params = llama_model_default_params();
-    model_params.n_gpu_layers = 99; // Full Vulkan offload onto Tensor G4 GPU
+    model_params.n_gpu_layers = 99; // Force full Vulkan offload onto Mali GPU
 
     g_model = llama_model_load_from_file(path, model_params);
     env->ReleaseStringUTFChars(model_path, path);
@@ -31,14 +32,13 @@ Java_com_jeremy_ai_agent_LlamaBridge_nativeInitModel(JNIEnv* env, jobject thiz, 
         return JNI_FALSE;
     }
 
+    // Context tuning optimized for fast single-shot task execution on Pixel 9
     llama_context_params ctx_params = llama_context_default_params();
-    ctx_params.n_ctx = 512;                 // Minimal context window for instant prefill
-    ctx_params.n_batch = 512;               // Optimized batch ingestion size
-    ctx_params.n_threads = 4;               // Performance core thread allocation
-    ctx_params.n_threads_batch = 4;         // Batch processing thread allocation
-    ctx_params.use_flash_attn = true;       // Hardware-friendly self-attention acceleration
-    ctx_params.type_k = GGML_TYPE_Q8_0;     // Quantize KV cache keys to Q8 to cut memory bandwidth bottleneck
-    ctx_params.type_v = GGML_TYPE_Q8_0;     // Quantize KV cache values to Q8
+    ctx_params.n_ctx = 512;                 // Keep context minimal for instant prefill
+    ctx_params.n_batch = 512;               // Full batch token processing block
+    ctx_params.n_threads = 4;               // Lock generation to 4 performance cores to prevent throttling
+    ctx_params.n_threads_batch = 4;         // Match batch threads for high-speed prompt ingestion
+    ctx_params.use_flash_attn = true;       // Enable flash attention for memory reduction
 
     g_ctx = llama_init_from_model(g_model, ctx_params);
     if (!g_ctx) {
@@ -139,7 +139,7 @@ Java_com_jeremy_ai_agent_LlamaBridge_nativeGenerate(JNIEnv* env, jobject thiz, j
     }
 
     std::string generated_text = "";
-    int max_tokens_to_generate = 36; // Keep generation tight and lightning fast for flat-lines
+    int max_tokens_to_generate = 32; // Tight token cap ensuring instant flat-line completion
     int cur_pos = tokens.size();
 
     for (int i = 0; i < max_tokens_to_generate; i++) {
