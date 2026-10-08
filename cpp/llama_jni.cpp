@@ -16,13 +16,13 @@ extern "C" {
 JNIEXPORT jboolean JNICALL
 Java_com_jeremy_ai_agent_LlamaBridge_nativeInitModel(JNIEnv* env, jobject thiz, jstring model_path) {
     const char* path = env->GetStringUTFChars(model_path, nullptr);
-    LOGI("Initializing llama backend for Pixel 9 Tensor G4: %s", path);
+    LOGI("Initializing llama backend for Pixel 9 (Pure CPU Mode): %s", path);
 
     llama_backend_init();
 
-    // Tensor G4 maximum layer offload configuration
+    // Pure CPU configuration (bypasses Vulkan GPU backend completely)
     llama_model_params model_params = llama_model_default_params();
-    model_params.n_gpu_layers = 99; // Force full Vulkan offload onto Mali GPU
+    model_params.n_gpu_layers = 0; // Force 0 layers on GPU
 
     g_model = llama_model_load_from_file(path, model_params);
     env->ReleaseStringUTFChars(model_path, path);
@@ -32,15 +32,15 @@ Java_com_jeremy_ai_agent_LlamaBridge_nativeInitModel(JNIEnv* env, jobject thiz, 
         return JNI_FALSE;
     }
 
-    // Context tuning optimized for fast single-shot task execution on Pixel 9
+    // Context tuning optimized for fast multi-threaded CPU execution on Tensor G4
     llama_context_params ctx_params = llama_context_default_params();
-    ctx_params.n_ctx = 2048;                // Keep context tightly bounded for fast agent turns
-    ctx_params.n_batch = 512;               // Match batch size to tensor processing limits
-    ctx_params.n_threads = 4;               // Lock generation to 4 cores to prevent thermal throttling
-    ctx_params.n_threads_batch = 4;         // Match batch threads for parallel prompt ingestion
+    ctx_params.n_ctx = 2048;                // 2K context window
+    ctx_params.n_batch = 512;               // Batch token processing block
+    ctx_params.n_threads = 4;               // Lock generation to 4 performance cores
+    ctx_params.n_threads_batch = 4;         // Match batch threads for parallel prefill
     
-    // Memory Bandwidth Optimizations for Tensor G4
-    ctx_params.type_k = GGML_TYPE_F16;      // FP16 KV cache preserves precision without heavy bandwidth cost
+    // Memory Bandwidth Optimizations
+    ctx_params.type_k = GGML_TYPE_F16;      // FP16 KV cache
     ctx_params.type_v = GGML_TYPE_F16;
 
     g_ctx = llama_init_from_model(g_model, ctx_params);
@@ -51,7 +51,7 @@ Java_com_jeremy_ai_agent_LlamaBridge_nativeInitModel(JNIEnv* env, jobject thiz, 
         return JNI_FALSE;
     }
 
-    LOGI("Success: Pixel 9 Tensor G4 Vulkan-accelerated context active.");
+    LOGI("Success: Pixel 9 pure CPU-accelerated context active.");
     return JNI_TRUE;
 }
 
