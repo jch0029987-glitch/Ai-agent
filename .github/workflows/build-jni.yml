@@ -1,4 +1,4 @@
-name: Build JNI Bridge Library
+Name: Build JNI Bridge Library (Pure CPU)
 
 on:
   workflow_dispatch:
@@ -21,39 +21,17 @@ jobs:
       - name: Set up Ninja Build Tool
         uses: seanmiddleditch/gha-setup-ninja@v3
 
-      - name: Download and Extract Official LunarG Vulkan SDK
-        run: |
-          mkdir -p cpp/external/vulkan-sdk
-          wget -q https://sdk.lunarg.com/sdk/download/latest/linux/vulkan_sdk.tar.xz -O vulkan_sdk.tar.xz
-          tar -xf vulkan_sdk.tar.xz -C cpp/external/vulkan-sdk
-          rm vulkan_sdk.tar.xz
-          
-          SDK_EXTRACTED_DIR=$(ls -d cpp/external/vulkan-sdk/*/ | head -n 1)
-          echo "VULKAN_SDK_PATH=${{ github.workspace }}/${SDK_EXTRACTED_DIR}x86_64" >> $GITHUB_ENV
-
-      - name: Build and Install SPIRV-Headers Locally
-        run: |
-          git clone --depth 1 https://github.com/KhronosGroup/SPIRV-Headers.git cpp/external/SPIRV-Headers-src
-          cmake -B cpp/build-spirv -S cpp/external/SPIRV-Headers-src \
-            -DCMAKE_INSTALL_PREFIX="${{ github.workspace }}/cpp/external/spirv-install"
-          cmake --build cpp/build-spirv --target install
-
-      - name: Configure CMake for JNI Bridge & Vulkan
+      - name: Configure CMake for Pure CPU JNI Bridge
         run: |
           NDK_PATH=$(ls -d $ANDROID_SDK_ROOT/ndk/* | head -n 1)
-          SDK_DIR=$(ls -d cpp/external/vulkan-sdk/* | head -n 1)
-          VULKAN_SDK_BIN="${{ github.workspace }}/$SDK_DIR/x86_64"
           
           cmake -B build-jni -S cpp \
             -G Ninja \
             -DCMAKE_TOOLCHAIN_FILE="$NDK_PATH/build/cmake/android.toolchain.cmake" \
             -DANDROID_ABI=arm64-v8a \
             -DANDROID_PLATFORM=android-28 \
-            -DGGML_VULKAN=ON \
+            -DGGML_VULKAN=OFF \
             -DGGML_OPENMP=OFF \
-            -DSPIRV-Headers_DIR="${{ github.workspace }}/cpp/external/spirv-install/share/cmake/SPIRV-Headers" \
-            -DVulkan_GLSLC_EXECUTABLE="$VULKAN_SDK_BIN/bin/glslc" \
-            -DVulkan_INCLUDE_DIR="$VULKAN_SDK_BIN/include" \
             -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_VERBOSE_MAKEFILE=ON
 
