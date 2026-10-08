@@ -16,12 +16,12 @@ extern "C" {
 JNIEXPORT jboolean JNICALL
 Java_com_jeremy_ai_agent_LlamaBridge_nativeInitModel(JNIEnv* env, jobject thiz, jstring model_path) {
     const char* path = env->GetStringUTFChars(model_path, nullptr);
-    LOGI("Initializing llama backend and loading checkpoint: %s", path);
+    LOGI("Initializing llama backend and loading checkpoint for Pixel 9 Tensor G4: %s", path);
 
     llama_backend_init();
 
     llama_model_params model_params = llama_model_default_params();
-    model_params.n_gpu_layers = 99; // Offload fully to Vulkan GPU backend for mobile acceleration
+    model_params.n_gpu_layers = 99; // Full Vulkan offload onto Tensor G4 GPU
 
     g_model = llama_model_load_from_file(path, model_params);
     env->ReleaseStringUTFChars(model_path, path);
@@ -32,8 +32,13 @@ Java_com_jeremy_ai_agent_LlamaBridge_nativeInitModel(JNIEnv* env, jobject thiz, 
     }
 
     llama_context_params ctx_params = llama_context_default_params();
-    ctx_params.n_ctx = 2048;    // Balanced context window for memory conservation on mobile
-    ctx_params.n_batch = 512;   // Optimal batch size for mobile GPU processing
+    ctx_params.n_ctx = 512;                 // Minimal context window for instant prefill
+    ctx_params.n_batch = 512;               // Optimized batch ingestion size
+    ctx_params.n_threads = 4;               // Performance core thread allocation
+    ctx_params.n_threads_batch = 4;         // Batch processing thread allocation
+    ctx_params.use_flash_attn = true;       // Hardware-friendly self-attention acceleration
+    ctx_params.type_k = GGML_TYPE_Q8_0;     // Quantize KV cache keys to Q8 to cut memory bandwidth bottleneck
+    ctx_params.type_v = GGML_TYPE_Q8_0;     // Quantize KV cache values to Q8
 
     g_ctx = llama_init_from_model(g_model, ctx_params);
     if (!g_ctx) {
@@ -43,7 +48,7 @@ Java_com_jeremy_ai_agent_LlamaBridge_nativeInitModel(JNIEnv* env, jobject thiz, 
         return JNI_FALSE;
     }
 
-    LOGI("Success: Model & Vulkan-accelerated context active.");
+    LOGI("Success: Pixel 9 Tensor G4 Vulkan-accelerated context active.");
     return JNI_TRUE;
 }
 
@@ -94,20 +99,18 @@ Java_com_jeremy_ai_agent_LlamaBridge_nativeGenerate(JNIEnv* env, jobject thiz, j
     tokens.resize(actual_tokens);
     env->ReleaseStringUTFChars(prompt, prompt_str);
 
-    // Initialize sampler chain (Greedy / temperature decoding)
     auto sparams = llama_sampler_chain_default_params();
     llama_sampler* smpl = llama_sampler_chain_init(sparams);
     llama_sampler_chain_add(smpl, llama_sampler_init_greedy());
 
-    // Setup initial prompt evaluation batch
     llama_batch batch = {
-        /*n_tokens       */ static_cast<int32_t>(tokens.size()),
-        /*token          */ tokens.data(),
-        /*embd           */ nullptr,
-        /*pos            */ nullptr,
-        /*n_seq_id       */ nullptr,
-        /*seq_id         */ nullptr,
-        /*logits         */ nullptr
+        static_cast<int32_t>(tokens.size()),
+        tokens.data(),
+        nullptr,
+        nullptr,
+        nullptr,
+        nullptr,
+        nullptr
     };
 
     std::vector<llama_pos> pos(tokens.size());
@@ -120,7 +123,7 @@ Java_com_jeremy_ai_agent_LlamaBridge_nativeGenerate(JNIEnv* env, jobject thiz, j
         pos[i] = static_cast<llama_pos>(i);
         seq_id[i] = single_seq_id.data();
         if (i == tokens.size() - 1) {
-            logits[i] = 1; // Request logits on final prompt token
+            logits[i] = 1;
         }
     }
 
@@ -129,7 +132,6 @@ Java_com_jeremy_ai_agent_LlamaBridge_nativeGenerate(JNIEnv* env, jobject thiz, j
     batch.seq_id = seq_id.data();
     batch.logits = logits.data();
 
-    // Evaluate prompt tokens via Vulkan backend
     if (llama_decode(g_ctx, batch) != 0) {
         LOGE("Inference Error: llama_decode failed on prompt evaluation.");
         llama_sampler_free(smpl);
@@ -137,26 +139,22 @@ Java_com_jeremy_ai_agent_LlamaBridge_nativeGenerate(JNIEnv* env, jobject thiz, j
     }
 
     std::string generated_text = "";
-    int max_tokens_to_generate = 128; // Capped to prevent thermal throttling on mobile hardware
+    int max_tokens_to_generate = 36; // Keep generation tight and lightning fast for flat-lines
     int cur_pos = tokens.size();
 
-    // Autoregressive generation loop
     for (int i = 0; i < max_tokens_to_generate; i++) {
         llama_token new_token_id = llama_sampler_sample(smpl, g_ctx, -1);
 
-        // Check for End of Generation using the correct vocabulary pointer
         if (llama_token_is_eog(vocab, new_token_id)) {
             break;
         }
 
-        // Convert token ID to text piece
         char buf[256];
         int n = llama_token_to_piece(vocab, new_token_id, buf, sizeof(buf), 0, true);
         if (n > 0) {
             generated_text.append(buf, n);
         }
 
-        // Prepare single-token batch for the next step
         batch.n_tokens = 1;
         batch.token = &new_token_id;
         
