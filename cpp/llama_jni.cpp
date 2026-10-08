@@ -72,9 +72,6 @@ Java_com_jeremy_ai_agent_LlamaBridge_nativeGenerateWithGrammar(JNIEnv* env, jobj
         return env->NewStringUTF("Error: Engine offline or uninitialized.");
     }
 
-    // Clear KV cache sequences using the modern llama.cpp API
-    llama_kv_cache_seq_rm(g_ctx, -1, -1, -1);
-
     const char* prompt_str = env->GetStringUTFChars(prompt, nullptr);
     const char* grammar_str = env->GetStringUTFChars(grammar, nullptr);
     LOGI("Executing grammar-constrained generation.");
