@@ -1,4 +1,4 @@
-Name: Build JNI Bridge Library (Pure CPU)
+name: Build JNI Bridge Library (Pure CPU)
 
 on:
   workflow_dispatch:
