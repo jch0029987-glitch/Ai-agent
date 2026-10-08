@@ -103,20 +103,15 @@ Java_com_jeremy_ai_agent_LlamaBridge_nativeGenerateWithGrammar(JNIEnv* env, jobj
     tokens.resize(actual_tokens);
     env->ReleaseStringUTFChars(prompt, prompt_str);
 
-    // 1. Initialize the GBNF grammar parser (root rule is typically "root")
-    llama_grammar* lg = llama_grammar_init(grammar_str, "root");
-    env->ReleaseStringUTFChars(grammar, grammar_str);
-
-    if (!lg) {
-        return env->NewStringUTF("Error: Failed to initialize GBNF grammar.");
-    }
-
+    // Initialize sampler chain using modern sampler API
     auto sparams = llama_sampler_chain_default_params();
     llama_sampler* smpl = llama_sampler_chain_init(sparams);
     
-    // 2. Add grammar constraints and greedy sampling to the chain
-    llama_sampler_chain_add(smpl, llama_sampler_init_grammar(g_model, grammar_str, "root"));
+    // Pass vocab pointer, grammar string, and root rule directly
+    llama_sampler_chain_add(smpl, llama_sampler_init_grammar(vocab, grammar_str, "root"));
     llama_sampler_chain_add(smpl, llama_sampler_init_greedy());
+
+    env->ReleaseStringUTFChars(grammar, grammar_str);
 
     llama_batch batch = {
         static_cast<int32_t>(tokens.size()),
@@ -149,7 +144,6 @@ Java_com_jeremy_ai_agent_LlamaBridge_nativeGenerateWithGrammar(JNIEnv* env, jobj
 
     if (llama_decode(g_ctx, batch) != 0) {
         LOGE("Inference Error: llama_decode failed on prompt evaluation.");
-        llama_grammar_free(lg);
         llama_sampler_free(smpl);
         return env->NewStringUTF("Error: Prompt evaluation decode failed.");
     }
@@ -170,9 +164,6 @@ Java_com_jeremy_ai_agent_LlamaBridge_nativeGenerateWithGrammar(JNIEnv* env, jobj
         if (n > 0) {
             generated_text.append(buf, n);
         }
-
-        // Apply accepted token back to the grammar filter state machine
-        // (Note: llama.cpp's sampler chain handles grammar state acceptance automatically when sampling)
 
         batch.n_tokens = 1;
         batch.token = &new_token_id;
@@ -197,7 +188,6 @@ Java_com_jeremy_ai_agent_LlamaBridge_nativeGenerateWithGrammar(JNIEnv* env, jobj
         }
     }
 
-    llama_grammar_free(lg);
     llama_sampler_free(smpl);
     LOGI("Grammar generation complete. Output length: %zu chars.", generated_text.length());
     return env->NewStringUTF(generated_text.c_str());
