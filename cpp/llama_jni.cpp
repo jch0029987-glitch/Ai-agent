@@ -11,6 +11,26 @@
 static llama_model* g_model = nullptr;
 static llama_context* g_ctx = nullptr;
 
+// Helper to safely reset/re-create the context in-place for this llama.cpp version
+static bool recreate_context() {
+    if (g_ctx) {
+        llama_free(g_ctx);
+        g_ctx = nullptr;
+    }
+    if (!g_model) return false;
+
+    llama_context_params ctx_params = llama_context_default_params();
+    ctx_params.n_ctx = 2048;                
+    ctx_params.n_batch = 512;               
+    ctx_params.n_threads = 4;               
+    ctx_params.n_threads_batch = 4;         
+    ctx_params.type_k = GGML_TYPE_F16;      
+    ctx_params.type_v = GGML_TYPE_F16;
+
+    g_ctx = llama_init_from_model(g_model, ctx_params);
+    return g_ctx != nullptr;
+}
+
 extern "C" {
 
 JNIEXPORT jboolean JNICALL
@@ -31,18 +51,8 @@ Java_com_jeremy_ai_agent_LlamaBridge_nativeInitModel(JNIEnv* env, jobject thiz, 
         return JNI_FALSE;
     }
 
-    llama_context_params ctx_params = llama_context_default_params();
-    ctx_params.n_ctx = 2048;                
-    ctx_params.n_batch = 512;               
-    ctx_params.n_threads = 4;               
-    ctx_params.n_threads_batch = 4;         
-    
-    ctx_params.type_k = GGML_TYPE_F16;      
-    ctx_params.type_v = GGML_TYPE_F16;
-
-    g_ctx = llama_init_from_model(g_model, ctx_params);
-    if (!g_ctx) {
-        LOGE("CRITICAL: Failed to create llama context.");
+    if (!recreate_context()) {
+        LOGE("CRITICAL: Failed to create initial llama context.");
         llama_model_free(g_model);
         g_model = nullptr;
         return JNI_FALSE;
@@ -68,16 +78,18 @@ Java_com_jeremy_ai_agent_LlamaBridge_nativeReleaseModel(JNIEnv* env, jobject thi
 
 JNIEXPORT jstring JNICALL
 Java_com_jeremy_ai_agent_LlamaBridge_nativeGenerateWithGrammar(JNIEnv* env, jobject thiz, jstring prompt, jstring grammar) {
-    if (!g_model || !g_ctx) {
+    if (!g_model) {
         return env->NewStringUTF("Error: Engine offline or uninitialized.");
     }
 
-    // Reset the KV cache state cleanly in-place for the new inference pass
-    llama_kv_cache_clear(g_ctx);
+    // Reinitialize context to ensure a clean state and valid token positions for each turn
+    if (!recreate_context()) {
+        return env->NewStringUTF("Error: Failed to reset llama context state.");
+    }
 
     const char* prompt_str = env->GetStringUTFChars(prompt, nullptr);
     const char* grammar_str = env->GetStringUTFChars(grammar, nullptr);
-    LOGI("Executing grammar-constrained generation with cleared KV cache.");
+    LOGI("Executing grammar-constrained generation with fresh context.");
 
     const llama_vocab* vocab = llama_model_get_vocab(g_model);
     if (!vocab) {
