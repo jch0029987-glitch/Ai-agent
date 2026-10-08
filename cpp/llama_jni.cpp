@@ -42,7 +42,6 @@ Java_com_jeremy_ai_agent_LlamaBridge_nativeInitModel(JNIEnv* env, jobject thiz, 
     // Memory Bandwidth Optimizations for Tensor G4
     ctx_params.type_k = GGML_TYPE_F16;      // FP16 KV cache preserves precision without heavy bandwidth cost
     ctx_params.type_v = GGML_TYPE_F16;
-    ctx_params.flash_attn = true;           // Crucial: cuts down memory overhead during long token generation
 
     g_ctx = llama_init_from_model(g_model, ctx_params);
     if (!g_ctx) {
@@ -52,7 +51,7 @@ Java_com_jeremy_ai_agent_LlamaBridge_nativeInitModel(JNIEnv* env, jobject thiz, 
         return JNI_FALSE;
     }
 
-    LOGI("Success: Pixel 9 Tensor G4 Vulkan-accelerated context active with Flash Attention.");
+    LOGI("Success: Pixel 9 Tensor G4 Vulkan-accelerated context active.");
     return JNI_TRUE;
 }
 
