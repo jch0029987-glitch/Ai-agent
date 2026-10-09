@@ -11,7 +11,7 @@
 static llama_model* g_model = nullptr;
 static llama_context* g_ctx = nullptr;
 
-// Helper to safely reset/re-create the context in-place for this llama.cpp version
+// Helper to safely reset/re-create the context in-place with optimized CPU parameters
 static bool recreate_context() {
     if (g_ctx) {
         llama_free(g_ctx);
@@ -22,10 +22,12 @@ static bool recreate_context() {
     llama_context_params ctx_params = llama_context_default_params();
     ctx_params.n_ctx = 2048;                
     ctx_params.n_batch = 512;               
-    ctx_params.n_threads = 4;               
+    ctx_params.n_threads = 4;               // Locked to Tensor G4's 4 high-performance cores
     ctx_params.n_threads_batch = 4;         
-    ctx_params.type_k = GGML_TYPE_F16;      
-    ctx_params.type_v = GGML_TYPE_F16;
+    
+    // KV Cache quantization to Q8_0 reduces mobile CPU memory bandwidth bottlenecks
+    ctx_params.type_k = GGML_TYPE_Q8_0;      
+    ctx_params.type_v = GGML_TYPE_Q8_0;
 
     g_ctx = llama_init_from_model(g_model, ctx_params);
     return g_ctx != nullptr;
@@ -41,7 +43,7 @@ Java_com_jeremy_ai_agent_LlamaBridge_nativeInitModel(JNIEnv* env, jobject thiz, 
     llama_backend_init();
 
     llama_model_params model_params = llama_model_default_params();
-    model_params.n_gpu_layers = 0; 
+    model_params.n_gpu_layers = 0; // Force 100% CPU execution via ARM NEON routines
 
     g_model = llama_model_load_from_file(path, model_params);
     env->ReleaseStringUTFChars(model_path, path);
@@ -82,7 +84,6 @@ Java_com_jeremy_ai_agent_LlamaBridge_nativeGenerateWithGrammar(JNIEnv* env, jobj
         return env->NewStringUTF("Error: Engine offline or uninitialized.");
     }
 
-    // Reinitialize context to ensure a clean state and valid token positions for each turn
     if (!recreate_context()) {
         return env->NewStringUTF("Error: Failed to reset llama context state.");
     }
@@ -118,11 +119,9 @@ Java_com_jeremy_ai_agent_LlamaBridge_nativeGenerateWithGrammar(JNIEnv* env, jobj
     tokens.resize(actual_tokens);
     env->ReleaseStringUTFChars(prompt, prompt_str);
 
-    // Initialize sampler chain using modern sampler API
     auto sparams = llama_sampler_chain_default_params();
     llama_sampler* smpl = llama_sampler_chain_init(sparams);
     
-    // Pass vocab pointer, grammar string, and root rule directly
     llama_sampler_chain_add(smpl, llama_sampler_init_grammar(vocab, grammar_str, "root"));
     llama_sampler_chain_add(smpl, llama_sampler_init_greedy());
 
