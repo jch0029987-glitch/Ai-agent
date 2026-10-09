@@ -21,8 +21,9 @@ static bool recreate_context() {
     llama_context_params ctx_params = llama_context_default_params();
     ctx_params.n_ctx = 2048;                
     ctx_params.n_batch = 512;               
-    ctx_params.n_threads = 4;               
-    ctx_params.n_threads_batch = 4;         
+    // PERFORMANCE ENHANCEMENT: Optimized thread allocation for mobile big.LITTLE core architecture
+    ctx_params.n_threads = 6;               
+    ctx_params.n_threads_batch = 6;         
     
     ctx_params.type_k = GGML_TYPE_Q8_0;      
     ctx_params.type_v = GGML_TYPE_Q8_0;
@@ -36,6 +37,8 @@ extern "C" {
 JNIEXPORT jboolean JNICALL
 Java_com_jeremy_ai_agent_LlamaBridge_nativeInitModel(JNIEnv* env, jobject thiz, jstring model_path) {
     const char* path = env->GetStringUTFChars(model_path, nullptr);
+    if (!path) return JNI_FALSE;
+
     LOGI("Initializing llama backend (Pure CPU Mode): %s", path);
 
     llama_backend_init();
@@ -89,43 +92,52 @@ Java_com_jeremy_ai_agent_LlamaBridge_nativeGenerateWithGrammar(JNIEnv* env, jobj
     const char* prompt_str = env->GetStringUTFChars(prompt, nullptr);
     const char* grammar_str = env->GetStringUTFChars(grammar, nullptr);
 
+    if (!prompt_str || !grammar_str) {
+        if (prompt_str) env->ReleaseStringUTFChars(prompt, prompt_str);
+        if (grammar_str) env->ReleaseStringUTFChars(grammar, grammar_str);
+        return env->NewStringUTF("Error: Failed to extract input string characters.");
+    }
+
+    std::string prompt_cpp(prompt_str);
+    std::string grammar_cpp(grammar_str);
+
+    env->ReleaseStringUTFChars(prompt, prompt_str);
+    env->ReleaseStringUTFChars(grammar, grammar_str);
+
     const llama_vocab* vocab = llama_model_get_vocab(g_model);
     if (!vocab) {
-        env->ReleaseStringUTFChars(prompt, prompt_str);
-        env->ReleaseStringUTFChars(grammar, grammar_str);
         return env->NewStringUTF("Error: Failed to retrieve model vocabulary.");
     }
 
     bool add_bos = true;
-    int prompt_len = strlen(prompt_str);
-    int n_tokens_required = -llama_tokenize(vocab, prompt_str, prompt_len, nullptr, 0, add_bos, true);
+    int prompt_len = static_cast<int>(prompt_cpp.length());
+    int n_tokens_required = -llama_tokenize(vocab, prompt_cpp.c_str(), prompt_len, nullptr, 0, add_bos, true);
     
     if (n_tokens_required <= 0) {
-        env->ReleaseStringUTFChars(prompt, prompt_str);
-        env->ReleaseStringUTFChars(grammar, grammar_str);
         return env->NewStringUTF("Error: Tokenizer length calculation failed.");
     }
 
     std::vector<llama_token> tokens(n_tokens_required);
-    int actual_tokens = llama_tokenize(vocab, prompt_str, prompt_len, tokens.data(), tokens.size(), add_bos, true);
+    int actual_tokens = llama_tokenize(vocab, prompt_cpp.c_str(), prompt_len, tokens.data(), tokens.size(), add_bos, true);
     
     if (actual_tokens < 0) {
-        env->ReleaseStringUTFChars(prompt, prompt_str);
-        env->ReleaseStringUTFChars(grammar, grammar_str);
         return env->NewStringUTF("Error: Tokenization process failed.");
     }
     tokens.resize(actual_tokens);
-    env->ReleaseStringUTFChars(prompt, prompt_str);
 
     auto sparams = llama_sampler_chain_default_params();
     llama_sampler* smpl = llama_sampler_chain_init(sparams);
     
-    llama_sampler_chain_add(smpl, llama_sampler_init_grammar(vocab, grammar_str, "root"));
+    // Safely initialize and check grammar sampler to avoid null pointer crashes
+    llama_sampler* grammar_sampler = llama_sampler_init_grammar(vocab, grammar_cpp.c_str(), "root");
+    if (grammar_sampler) {
+        llama_sampler_chain_add(smpl, grammar_sampler);
+    } else {
+        LOGE("Warning: GBNF grammar compilation failed. Falling back to unconstrained greedy sampling.");
+    }
     llama_sampler_chain_add(smpl, llama_sampler_init_greedy());
 
-    env->ReleaseStringUTFChars(grammar, grammar_str);
-
-    // SAFE BATCH INIT: Use llama.cpp built-in allocation to prevent layout crashes
+    // SAFE BATCH INIT
     int num_tokens = static_cast<int>(tokens.size());
     llama_batch batch = llama_batch_init(num_tokens, 0, 1);
     batch.n_tokens = num_tokens;
@@ -146,7 +158,7 @@ Java_com_jeremy_ai_agent_LlamaBridge_nativeGenerateWithGrammar(JNIEnv* env, jobj
     }
 
     std::string generated_text;
-    generated_text.reserve(64);
+    generated_text.reserve(128); // PERFORMANCE ENHANCEMENT: Preallocate output buffer to minimize heap re-allocations
     
     int max_tokens_to_generate = 48; 
     int cur_pos = num_tokens;
@@ -164,7 +176,6 @@ Java_com_jeremy_ai_agent_LlamaBridge_nativeGenerateWithGrammar(JNIEnv* env, jobj
             generated_text.append(buf, n);
         }
 
-        // Reuse the batch structure safely for single-token generation steps
         batch.n_tokens = 1;
         batch.token[0] = new_token_id;
         batch.pos[0] = static_cast<llama_pos>(cur_pos);
