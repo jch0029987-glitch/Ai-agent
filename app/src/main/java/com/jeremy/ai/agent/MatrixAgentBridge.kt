@@ -19,7 +19,7 @@ class MatrixAgentBridge(
     private val context: Context,
     private val agentManager: AgentManager,
     private val homeserverUrl: String = "http://127.0.0.1:8082",
-    private val accessToken: String = "syt_YWk_RjfwAZHdioPTGicpEfMU_3g4uhb",
+    private val accessToken: String = TokenProvider.getMatrixAccessToken(context),
     private val botUserId: String = "@ai:localhost"
 ) {
     private val TAG = "MatrixAgentBridge"
@@ -94,7 +94,6 @@ class MatrixAgentBridge(
         val sender = event.optString("sender")
         if (sender == botUserId) return
 
-        // SAFETY FILTER: Ignore Google Messages / SMS bridge senders or puppets so the bot doesn't auto-reply to texts
         if (sender.contains("sms") || sender.contains("puppet") || sender.contains("messenger")) {
             Log.i(TAG, "Skipping bridged SMS message from $sender")
             return
@@ -105,9 +104,6 @@ class MatrixAgentBridge(
 
         val body = content.optString("body", "").trim()
         if (body.isEmpty()) return
-
-        // Optional safety: Only respond if explicitly mentioned or if it's a direct chat room with the bot
-        // if (!body.contains("@ai") && !roomId.startsWith("!")) return
 
         Log.i(TAG, "Matrix message from $sender: $body")
 
@@ -202,7 +198,7 @@ class MatrixAgentBridge(
             val connection = (url.openConnection() as HttpURLConnection).apply {
                 requestMethod = "POST"
                 setRequestProperty("Content-Type", "application/json")
-                setRequestProperty("Authorization", "Bearer syt_YWk_RjfwAZHdioPTGicpEfMU_3g4uhb")
+                setRequestProperty("Authorization", "Bearer $accessToken")
                 doOutput = true
                 connectTimeout = 3000
                 readTimeout = 60000
@@ -241,5 +237,15 @@ class MatrixAgentBridge(
             Log.e(TAG, "OpenAI endpoint query failed: ${e.localizedMessage}")
             return@withContext "Error: ${e.localizedMessage}"
         }
+    }
+}
+
+/**
+ * Utility helper to safely load runtime configuration secrets.
+ */
+object TokenProvider {
+    fun getMatrixAccessToken(context: Context): String {
+        // Fallback or read from secure local storage / BuildConfig / environment
+        return System.getenv("MATRIX_ACCESS_TOKEN") ?: ""
     }
 }
