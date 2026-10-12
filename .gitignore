@@ -1,0 +1,17 @@
+# Gradle / Android Studio
+.gradle/
+/build/
+**/build/
+.idea/
+*.iml
+local.properties
+
+# Local model weights and storage
+*.gguf
+/sdcard/
+models/
+
+# OS Specific
+.DS_Store
+Thumbs.db
+app/src/main/jniLibs/

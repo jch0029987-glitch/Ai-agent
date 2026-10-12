@@ -1,0 +1,148 @@
+package com.jeremy.ai.agent
+
+import android.content.Context
+import com.jeremy.ai.agent.services.AgentNotificationListener
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+
+class AgentManager(private val context: Context) {
+    private val bridge = LlamaBridge(context)
+    private var isInitialized = false
+
+    private val githubClient = GitHubToolClient()
+    private val toolRouter = AgentToolRouter(context, githubClient)
+
+    var useCliMode: Boolean = false
+
+    suspend fun setupEngineFromStorage(modelPathOrName: String): Boolean = withContext(Dispatchers.IO) {
+        isInitialized = bridge.initializeModel(modelPathOrName)
+        return@withContext isInitialized
+    }
+
+    suspend fun promptAgent(prompt: String, onToken: (String) -> Unit = {}): String = withContext(Dispatchers.Default) {
+        if (!isInitialized) return@withContext "Error: Engine offline or uninitialized."
+
+        val trimmedPrompt = prompt.trim()
+        val lowerPrompt = trimmedPrompt.lowercase()
+
+        // Action keywords that must trigger the GBNF Tool Agent Loop
+        val actionKeywords = listOf("open", "launch", "click", "tap", "type", "get", "check", "list", "show", "press", "find", "task:")
+        val isActionCommand = actionKeywords.any { lowerPrompt.contains(it) }
+
+        // Only treat explicit greetings or short conversational text as casual chat
+        val isCasualChat = !isActionCommand && 
+                           (lowerPrompt.matches(Regex("^(hi|hello|hey|sup|what's up|who are you|help|thanks|thank you).*")) || lowerPrompt.split(" ").size <= 2)
+
+        if (isCasualChat) {
+            val chatPrompt = """
+                <|im_start|>system
+                You are a helpful, concise AI assistant running locally on a Pixel 9 device. Respond in 1-2 brief English sentences only.
+                <|im_end|>
+                <|im_start|>user
+                $trimmedPrompt
+                <|im_end|>
+                <|im_start|>assistant
+            """.trimIndent()
+
+            return@withContext if (useCliMode) {
+                bridge.generateWithCli(chatPrompt, "model.gguf", "", onToken)
+            } else {
+                bridge.generate(chatPrompt, onToken)
+            }
+        }
+
+        // --- Autonomous Multi-Step Tool Agent Loop ---
+        val maxSteps = 6
+        val executionHistory = StringBuilder()
+        val currentGoal = prompt
+
+        for (step in 1..maxSteps) {
+            val notificationContext = AgentNotificationListener.getContextSummary()
+            val screenService = AgentAccessibilityService.instance
+            val screenContext = screenService?.getScreenContentSummary() ?: "Accessibility Service offline."
+
+            val toolGrammar = """
+                root ::= tool-call
+                tool-call ::= "TOOL: " tool-name "\n" "ARG: " arg-value
+                tool-name ::= "open_browser" | "github_get_issues" | "get_screen_content" | "get_recent_notifications" | "open_app" | "click_text" | "type_text" | "get_installed_apps" | "finish"
+                arg-value ::= [^\n]*
+            """.trimIndent()
+
+            val systemPrompt = """
+                <|im_start|>system
+                You are an autonomous Android action engine. You execute composite tasks step-by-step using tools.
+                
+                [RECENT NOTIFICATIONS]
+                $notificationContext
+                
+                [CURRENT SCREEN HIERARCHY]
+                $screenContext
+                
+                [EXECUTION HISTORY]
+                $executionHistory
+                
+                Rules:
+                - Output only a single TOOL and ARG pair per turn.
+                - To check messages or alerts, use TOOL: get_recent_notifications.
+                - To see UI elements on screen, use TOOL: get_screen_content.
+                - To view or launch installed applications, use TOOL: get_installed_apps or TOOL: open_app.
+                - When the overall task is completely fulfilled, use TOOL: finish with ARG: summary of results.
+                <|im_end|>
+                <|im_start|>user
+                Task: $currentGoal
+                <|im_end|>
+                <|im_start|>assistant
+                TOOL:
+            """.trimIndent()
+
+            val rawModelOutput = if (useCliMode) {
+                bridge.generateWithCli(systemPrompt, "model.gguf", toolGrammar, onToken)
+            } else {
+                bridge.generateWithGrammar(systemPrompt, toolGrammar, onToken)
+            }
+
+            val formattedOutput = if (rawModelOutput.startsWith("TOOL:")) {
+                rawModelOutput
+            } else {
+                "TOOL:${rawModelOutput.trimStart()}"
+            }
+
+            val lines = formattedOutput.lines().map { it.trim() }
+            val toolLine = lines.find { it.startsWith("TOOL:") } ?: "TOOL: unknown"
+            val argLine = lines.find { it.startsWith("ARG:") }
+            
+            val rawToolName = toolLine.removePrefix("TOOL:").trim().lowercase()
+            val argValue = argLine?.removePrefix("ARG:")?.trim() ?: ""
+
+            val toolName = when (rawToolName) {
+                "activate_network", "launch_browser", "open_url" -> "open_browser"
+                "launch_app", "start_app" -> "open_app"
+                "tap_text", "press_text" -> "click_text"
+                "list_apps", "get_apps", "apps", "open_apps" -> "get_installed_apps"
+                "notifications", "get_notifications", "check_notifications" -> "get_recent_notifications"
+                else -> rawToolName
+            }
+
+            if (toolName == "finish") {
+                val finalSummary = if (argValue.isNotBlank()) argValue else "Task successfully completed."
+                return@withContext "Task Finished Successfully:\n$finalSummary\n\nExecution Log:\n$executionHistory"
+            }
+
+            val toolResult = toolRouter.executeToolCall("TOOL: $toolName\nARG: $argValue")
+            executionHistory.append("Step $step -> TOOL: $toolName (ARG: $argValue)\nResult: $toolResult\n\n")
+
+            if (step == maxSteps) {
+                return@withContext "Reached maximum iteration limit ($maxSteps steps).\n\nHistory:\n$executionHistory"
+            }
+        }
+
+        return@withContext "Agent execution loop terminated."
+    }
+
+    fun shutdown() {
+        if (isInitialized) {
+            bridge.releaseModel()
+            isInitialized = false
+        }
+    }
+}
