@@ -6,6 +6,9 @@ on:
     paths:
       - 'cpp/**'
 
+permissions:
+  contents: write
+
 jobs:
   build-jni:
     runs-on: ubuntu-latest
@@ -16,7 +19,9 @@ jobs:
 
       - name: Fetch llama.cpp Source Tree
         run: |
-          git clone --depth 1 https://github.com/ggml-org/llama.cpp.git cpp/llama.cpp
+          if [ ! -d "cpp/llama.cpp" ]; then
+            git clone --depth 1 https://github.com/ggml-org/llama.cpp.git cpp/llama.cpp
+          fi
 
       - name: Set up Ninja Build Tool
         uses: seanmiddleditch/gha-setup-ninja@v3
@@ -39,8 +44,23 @@ jobs:
         run: |
           cmake --build build-jni --config Release --verbose -- -j2
 
-      - name: Upload JNI Artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: android-jni-bridge
-          path: build-jni/**/*.so
+      - name: Package JNI Library into jniLibs
+        run: |
+          mkdir -p app/src/main/jniLibs/arm64-v8a
+          
+          find build-jni -name "*.so" -exec cp {} app/src/main/jniLibs/arm64-v8a/ \;
+          
+          chmod +x app/src/main/jniLibs/arm64-v8a/*.so
+          ls -la app/src/main/jniLibs/arm64-v8a/
+
+      - name: Commit and Push JNI Binaries
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          git add app/src/main/jniLibs/arm64-v8a/
+          if git diff --staged --quiet; then
+            echo "No changes to commit."
+          else
+            git commit -m "chore: update compiled JNI bridge binaries [skip ci]"
+            git push
+          fi
