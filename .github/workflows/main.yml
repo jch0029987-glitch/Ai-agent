@@ -3,6 +3,9 @@ name: Build Android Llama.cpp CPU (Pixel 9 Optimized)
 on:
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
   build-android-cpu:
     runs-on: ubuntu-latest
@@ -45,26 +48,33 @@ jobs:
         run: |
           cmake --build build-android-cpu --config Release
 
-      - name: Package Standalone Binaries as Native .so Assets
+      - name: Package Standalone Binaries into jniLibs
         run: |
-          mkdir -p output_so
+          mkdir -p app/src/main/jniLibs/arm64-v8a
           
-          # Grab the standalone server executable
           if [ -f "build-android-cpu/bin/llama-server" ]; then
-            cp build-android-cpu/bin/llama-server output_so/libllama-server.so
+            cp build-android-cpu/bin/llama-server app/src/main/jniLibs/arm64-v8a/libllama-server.so
           elif [ -f "build-android-cpu/llama-server" ]; then
-            cp build-android-cpu/llama-server output_so/libllama-server.so
+            cp build-android-cpu/llama-server app/src/main/jniLibs/arm64-v8a/libllama-server.so
           fi
 
-          # Grab the standalone cli executable
           if [ -f "build-android-cpu/bin/llama-cli" ]; then
-            cp build-android-cpu/bin/llama-cli output_so/libllama-cli.so
+            cp build-android-cpu/bin/llama-cli app/src/main/jniLibs/arm64-v8a/libllama-cli.so
           elif [ -f "build-android-cpu/llama-cli" ]; then
-            cp build-android-cpu/llama-cli output_so/libllama-cli.so
+            cp build-android-cpu/llama-cli app/src/main/jniLibs/arm64-v8a/libllama-cli.so
           fi
+          
+          chmod +x app/src/main/jniLibs/arm64-v8a/libllama-*.so
+          ls -la app/src/main/jniLibs/arm64-v8a/
 
-      - name: Upload Optimized Server & CLI Artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: libllama-binaries-optimized
-          path: output_so/
+      - name: Commit and Push Native Binaries
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          git add app/src/main/jniLibs/arm64-v8a/
+          if git diff --staged --quiet; then
+            echo "No changes to commit."
+          else
+            git commit -m "chore: update pre-compiled llama binaries [skip ci]"
+            git push
+          fi
