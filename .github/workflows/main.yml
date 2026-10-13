@@ -71,7 +71,7 @@ jobs:
         run: |
           git config --global user.name "github-actions[bot]"
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
-          git add app/src/main/jniLibs/arm64-v8a/
+          git add -f app/src/main/jniLibs/arm64-v8a/
           if git diff --staged --quiet; then
             echo "No changes to commit."
           else
