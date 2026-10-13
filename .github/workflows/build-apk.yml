@@ -33,7 +33,7 @@ jobs:
           SIGNING_KEY: ${{ secrets.SIGNING_KEY }}
           KEYSTORE_PATH: app/release-keystore.jks
         run: |
-          echo "$SIGNING_KEY" | base64 --decode > $KEYSTORE_PATH
+          echo "$SIGNING_KEY" | tr -d '[:space:]' | base64 --decode > $KEYSTORE_PATH
 
       - name: Build Release APK
         env:
