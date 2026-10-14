@@ -120,18 +120,17 @@ fun AgentDashboard(
     var isCliMode by remember { mutableStateOf(false) }
     var isMatrixBridgeActive by remember { mutableStateOf(false) }
 
-    // Hold reference to MatrixAgentBridge
+    // Matrix bridge reads access token securely via Gradle BuildConfig
     val matrixBridge = remember {
         MatrixAgentBridge(
             context = context,
             agentManager = agentManager,
             homeserverUrl = "http://127.0.0.1:8082",
-            accessToken = "syt_YWk_RjfwAZHdioPTGicpEfMU_3g4uhb",
+            accessToken = BuildConfig.MATRIX_ACCESS_TOKEN,
             botUserId = "@ai:localhost"
         )
     }
 
-    // Sync toggle state with AgentManager
     LaunchedEffect(isCliMode) {
         agentManager.useCliMode = isCliMode
     }
@@ -142,7 +141,6 @@ fun AgentDashboard(
             .padding(16.dp),
         verticalArrangement = Arrangement.SpaceBetween
     ) {
-        // App Header & Hardware Status
         Column {
             Text(
                 text = "Local AI Agent (Pixel 9)",
@@ -162,7 +160,6 @@ fun AgentDashboard(
             }
         }
 
-        // Console Log Output
         Card(
             modifier = Modifier
                 .weight(1f)
@@ -181,9 +178,7 @@ fun AgentDashboard(
             }
         }
 
-        // Control Panel
         Column {
-            // Execution Mode & Matrix Bridge Toggles
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -252,16 +247,25 @@ fun AgentDashboard(
 
                         coroutineScope.launch {
                             try {
-                                outputLog += "-> Locating model in /sdcard/Download/models/...\n"
+                                outputLog += "-> Locating model file...\n"
                                 
-                                val externalPath = "/sdcard/Download/models/$modelFileName"
-                                val modelFile = File(externalPath)
+                                val externalFile = File("/sdcard/Download/models/$modelFileName")
+                                val internalFile = File(context.filesDir, modelFileName)
                                 
-                                val targetPath = if (modelFile.exists()) {
-                                    outputLog += "-> Found model externally: $externalPath\n"
-                                    externalPath
+                                val targetPath = if (internalFile.exists() && internalFile.length() > 0) {
+                                    outputLog += "-> Using cached internal model: ${internalFile.absolutePath}\n"
+                                    internalFile.absolutePath
+                                } else if (externalFile.exists()) {
+                                    outputLog += "-> Copying model from external storage to internal app directory...\n"
+                                    externalFile.inputStream().use { input ->
+                                        internalFile.outputStream().use { output ->
+                                            input.copyTo(output)
+                                        }
+                                    }
+                                    outputLog += "-> Copy complete: ${internalFile.absolutePath}\n"
+                                    internalFile.absolutePath
                                 } else {
-                                    outputLog += "-> External model not found, falling back to internal storage.\n"
+                                    outputLog += "-> External model not found. Defaulting to internal path.\n"
                                     modelFileName
                                 }
 
