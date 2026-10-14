@@ -18,11 +18,12 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.io.File
 
 class MainActivity : ComponentActivity() {
-
     private val requiredPermissions = arrayOf(
         Manifest.permission.CAMERA,
         Manifest.permission.RECORD_AUDIO,
@@ -45,7 +46,6 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        
         setupGlobalCrashHandler()
         checkAndRequestPermissions()
 
@@ -83,13 +83,13 @@ class MainActivity : ComponentActivity() {
         Thread.setDefaultUncaughtExceptionHandler { thread, throwable ->
             val stackTrace = throwable.stackTraceToString()
             val errorMsg = if (stackTrace.length > 500) stackTrace.substring(0, 500) + "..." else stackTrace
-            
+
             NotificationHelper.postError(
                 applicationContext,
                 "Fatal Crash (${thread.name})",
                 errorMsg
             )
-            
+
             defaultHandler?.uncaughtException(thread, throwable)
         }
     }
@@ -120,7 +120,6 @@ fun AgentDashboard(
     var isCliMode by remember { mutableStateOf(false) }
     var isMatrixBridgeActive by remember { mutableStateOf(false) }
 
-    // Matrix bridge reads access token securely via Gradle BuildConfig
     val matrixBridge = remember {
         MatrixAgentBridge(
             context = context,
@@ -149,8 +148,8 @@ fun AgentDashboard(
             Spacer(modifier = Modifier.height(8.dp))
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Badge(
-                    containerColor = if (isModelLoaded) MaterialTheme.colorScheme.primary 
-                                     else MaterialTheme.colorScheme.error
+                    containerColor = if (isModelLoaded) MaterialTheme.colorScheme.primary
+                    else MaterialTheme.colorScheme.error
                 )
                 Spacer(modifier = Modifier.width(8.dp))
                 Text(
@@ -230,6 +229,7 @@ fun AgentDashboard(
                 modifier = Modifier.fillMaxWidth()
             )
             Spacer(modifier = Modifier.height(4.dp))
+
             OutlinedTextField(
                 value = promptText,
                 onValueChange = { promptText = it },
@@ -237,6 +237,7 @@ fun AgentDashboard(
                 modifier = Modifier.fillMaxWidth()
             )
             Spacer(modifier = Modifier.height(8.dp))
+
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(8.dp)
@@ -244,17 +245,19 @@ fun AgentDashboard(
                 Button(
                     onClick = {
                         requestBatteryExemption()
-
-                        coroutineScope.launch {
+                        coroutineScope.launch(Dispatchers.IO) {
                             try {
-                                outputLog += "-> Locating model file...\n"
-                                
+                                withContext(Dispatchers.Main) {
+                                    outputLog += "-> Locating model file...\n"
+                                }
+
                                 val externalFile = File("/sdcard/Download/models/$modelFileName")
                                 val internalFile = File(context.filesDir, modelFileName)
-                                
-                                // Force overwrite internal cache with fresh copy from external storage
+
                                 val targetPath = if (externalFile.exists()) {
-                                    outputLog += "-> Copying fresh model from external storage to internal app directory...\n"
+                                    withContext(Dispatchers.Main) {
+                                        outputLog += "-> Copying fresh model from external storage to internal app directory...\n"
+                                    }
                                     if (internalFile.exists()) {
                                         internalFile.delete()
                                     }
@@ -263,33 +266,43 @@ fun AgentDashboard(
                                             input.copyTo(output)
                                         }
                                     }
-                                    outputLog += "-> Copy complete: ${internalFile.absolutePath}\n"
+                                    withContext(Dispatchers.Main) {
+                                        outputLog += "-> Copy complete: ${internalFile.absolutePath}\n"
+                                    }
                                     internalFile.absolutePath
                                 } else if (internalFile.exists() && internalFile.length() > 0) {
-                                    outputLog += "-> Using existing internal model: ${internalFile.absolutePath}\n"
+                                    withContext(Dispatchers.Main) {
+                                        outputLog += "-> Using existing internal model: ${internalFile.absolutePath}\n"
+                                    }
                                     internalFile.absolutePath
                                 } else {
-                                    outputLog += "-> External model not found. Defaulting to internal path.\n"
+                                    withContext(Dispatchers.Main) {
+                                        outputLog += "-> External model not found. Defaulting to internal path.\n"
+                                    }
                                     modelFileName
                                 }
 
                                 val success = agentManager.setupEngineFromStorage(targetPath)
-                                isModelLoaded = success
-                                if (success) {
-                                    outputLog += "-> Native engine initialized successfully.\n"
-                                    
-                                    val serviceIntent = Intent(context, AgentService::class.java)
-                                    ContextCompat.startForegroundService(context, serviceIntent)
-                                    outputLog += "-> Protected AgentService active.\n"
-                                } else {
-                                    val exactReason = LlamaServerManager.lastErrorReason.ifBlank { "Unknown native failure" }
-                                    outputLog += "-> Failed: $exactReason\n"
-                                    NotificationHelper.postError(context, "Engine Launch Failed", exactReason)
+
+                                withContext(Dispatchers.Main) {
+                                    isModelLoaded = success
+                                    if (success) {
+                                        outputLog += "-> Native engine initialized successfully.\n"
+                                        val serviceIntent = Intent(context, AgentService::class.java)
+                                        ContextCompat.startForegroundService(context, serviceIntent)
+                                        outputLog += "-> Protected AgentService active.\n"
+                                    } else {
+                                        val exactReason = LlamaServerManager.lastErrorReason.ifBlank { "Unknown native failure" }
+                                        outputLog += "-> Failed: $exactReason\n"
+                                        NotificationHelper.postError(context, "Engine Launch Failed", exactReason)
+                                    }
                                 }
                             } catch (e: Exception) {
-                                val errorMsg = e.localizedMessage ?: "Unknown initialization exception"
-                                outputLog += "-> Error: $errorMsg\n"
-                                NotificationHelper.postError(context, "Agent Initialization Exception", errorMsg)
+                                withContext(Dispatchers.Main) {
+                                    val errorMsg = e.localizedMessage ?: "Unknown initialization exception"
+                                    outputLog += "-> Error: $errorMsg\n"
+                                    NotificationHelper.postError(context, "Agent Initialization Exception", errorMsg)
+                                }
                             }
                         }
                     },
@@ -304,7 +317,6 @@ fun AgentDashboard(
                             val currentPrompt = promptText
                             outputLog += "User: $currentPrompt\nAgent: "
                             promptText = ""
-                            
                             coroutineScope.launch {
                                 try {
                                     agentManager.promptAgent(currentPrompt) { token ->
