@@ -252,17 +252,21 @@ fun AgentDashboard(
                                 val externalFile = File("/sdcard/Download/models/$modelFileName")
                                 val internalFile = File(context.filesDir, modelFileName)
                                 
-                                val targetPath = if (internalFile.exists() && internalFile.length() > 0) {
-                                    outputLog += "-> Using cached internal model: ${internalFile.absolutePath}\n"
-                                    internalFile.absolutePath
-                                } else if (externalFile.exists()) {
-                                    outputLog += "-> Copying model from external storage to internal app directory...\n"
+                                // Force overwrite internal cache with fresh copy from external storage
+                                val targetPath = if (externalFile.exists()) {
+                                    outputLog += "-> Copying fresh model from external storage to internal app directory...\n"
+                                    if (internalFile.exists()) {
+                                        internalFile.delete()
+                                    }
                                     externalFile.inputStream().use { input ->
                                         internalFile.outputStream().use { output ->
                                             input.copyTo(output)
                                         }
                                     }
                                     outputLog += "-> Copy complete: ${internalFile.absolutePath}\n"
+                                    internalFile.absolutePath
+                                } else if (internalFile.exists() && internalFile.length() > 0) {
+                                    outputLog += "-> Using existing internal model: ${internalFile.absolutePath}\n"
                                     internalFile.absolutePath
                                 } else {
                                     outputLog += "-> External model not found. Defaulting to internal path.\n"
