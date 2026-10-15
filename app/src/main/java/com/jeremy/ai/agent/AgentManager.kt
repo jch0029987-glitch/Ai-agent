@@ -101,10 +101,22 @@ class AgentManager(private val context: Context) {
                 bridge.generateWithGrammar(systemPrompt, toolGrammar, onToken)
             }
 
-            val formattedOutput = if (rawModelOutput.startsWith("TOOL:")) {
-                rawModelOutput
+            // Sanitize raw CLI binary text output to isolate the actual tool command block
+            val cleanOutput = if (useCliMode) {
+                val toolIndex = rawModelOutput.indexOf("TOOL:")
+                if (toolIndex != -1) {
+                    rawModelOutput.substring(toolIndex)
+                } else {
+                    rawModelOutput
+                }
             } else {
-                "TOOL:${rawModelOutput.trimStart()}"
+                rawModelOutput
+            }
+
+            val formattedOutput = if (cleanOutput.startsWith("TOOL:")) {
+                cleanOutput
+            } else {
+                "TOOL:${cleanOutput.trimStart()}"
             }
 
             val lines = formattedOutput.lines().map { it.trim() }

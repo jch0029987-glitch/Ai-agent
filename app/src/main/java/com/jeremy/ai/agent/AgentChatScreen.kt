@@ -8,106 +8,191 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
+import kotlinx.coroutines.launch
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun AgentChatScreen(
-    viewModel: AgentViewModel = viewModel()
+    viewModel: AgentViewModel = viewModel(),
+    requestBatteryExemption: () -> Unit = {}
 ) {
     val uiState by viewModel.uiState.collectAsState()
     var modelFileName by remember { mutableStateOf("model.gguf") }
     var inputQuery by remember { mutableStateOf("") }
 
-    // Determine what text to display in the output box based on the UI state
-    val currentOutput = when (val state = uiState) {
-        is AgentUiState.Ready -> "Engine ready. Enter a command below."
-        is AgentUiState.Generating -> "Thinking and executing tools..."
-        is AgentUiState.Success -> state.response
-        is AgentUiState.Error -> "Error: ${state.message}"
-        is AgentUiState.Loading -> state.message
-        else -> "Model offline."
-    }
+    val drawerState = rememberDrawerState(initialValue = DrawerValue.Closed)
+    val coroutineScope = rememberCoroutineScope()
+    val currentSession = viewModel.currentSession
 
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .padding(16.dp),
-        verticalArrangement = Arrangement.SpaceBetween
-    ) {
-        // Top Section: Model Loading & Status
-        Column(modifier = Modifier.fillMaxWidth()) {
-            Text(
-                text = "Muse AI Agent (Vulkan)",
-                style = MaterialTheme.typography.titleLarge
-            )
-            Spacer(modifier = Modifier.height(8.dp))
-
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                TextField(
-                    value = modelFileName,
-                    onValueChange = { modelFileName = it },
-                    label = { Text("Model File in Download/models") },
-                    modifier = Modifier.weight(1f),
-                    singleLine = true,
-                    enabled = uiState !is AgentUiState.Loading && uiState !is AgentUiState.Generating
+    ModalNavigationDrawer(
+        drawerState = drawerState,
+        drawerContent = {
+            ModalDrawerSheet {
+                Spacer(modifier = Modifier.height(16.dp))
+                Text(
+                    text = "Chat Center",
+                    style = MaterialTheme.typography.titleMedium,
+                    modifier = Modifier.padding(16.dp)
                 )
+                Divider()
+
+                // List of active chat threads
+                viewModel.sessions.forEach { session ->
+                    NavigationDrawerItem(
+                        label = { Text(session.title) },
+                        selected = session.id == viewModel.currentSessionId,
+                        onClick = {
+                            viewModel.selectSession(session.id)
+                            coroutineScope.launch { drawerState.close() }
+                        },
+                        modifier = Modifier.padding(NavigationDrawerItemDefaults.ItemPadding)
+                    )
+                }
+
+                Spacer(modifier = Modifier.weight(1f))
+
+                // New Thread Button
                 Button(
-                    onClick = { viewModel.initializeModelFromDownloads(modelFileName) },
-                    enabled = uiState !is AgentUiState.Loading && uiState !is AgentUiState.Generating
+                    onClick = {
+                        viewModel.createNewSession()
+                        coroutineScope.launch { drawerState.close() }
+                    },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(16.dp)
                 ) {
-                    Text("Load")
+                    Text("+ New Thread")
                 }
             }
         }
-
-        Spacer(modifier = Modifier.height(16.dp))
-
-        // Middle Section: Chat Output Display with Scroll
-        Card(
-            modifier = Modifier
-                .weight(1f)
-                .fillMaxWidth()
-        ) {
-            Box(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .padding(12.dp)
-                    .verticalScroll(rememberScrollState())
-            ) {
-                Text(
-                    text = currentOutput,
-                    style = MaterialTheme.typography.bodyMedium
+    ) {
+        Scaffold(
+            topBar = {
+                TopAppBar(
+                    title = { Text(currentSession.title) },
+                    navigationIcon = {
+                        IconButton(onClick = { coroutineScope.launch { drawerState.open() } }) {
+                            Text("≡", style = MaterialTheme.typography.headlineMedium)
+                        }
+                    }
                 )
             }
-        }
-
-        Spacer(modifier = Modifier.height(16.dp))
-
-        // Bottom Section: Prompt Input & Send
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
-            TextField(
-                value = inputQuery,
-                onValueChange = { inputQuery = it },
-                label = { Text("Ask Muse...") },
-                modifier = Modifier.weight(1f),
-                enabled = uiState is AgentUiState.Ready || uiState is AgentUiState.Success || uiState is AgentUiState.Error
-            )
-
-            Button(
-                onClick = {
-                    if (inputQuery.isNotBlank()) {
-                        viewModel.generateResponse(inputQuery)
-                        inputQuery = ""
-                    }
-                },
-                enabled = (uiState is AgentUiState.Ready || uiState is AgentUiState.Success || uiState is AgentUiState.Error) && inputQuery.isNotBlank()
+        ) { innerPadding ->
+            Column(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(innerPadding)
+                    .padding(16.dp),
+                verticalArrangement = Arrangement.SpaceBetween
             ) {
-                Text("Send")
+                // Top Section: Model Loading & Status
+                Column(modifier = Modifier.fillMaxWidth()) {
+                    Text(
+                        text = "Muse AI Agent (Vulkan)",
+                        style = MaterialTheme.typography.titleLarge
+                    )
+                    Spacer(modifier = Modifier.height(8.dp))
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        TextField(
+                            value = modelFileName,
+                            onValueChange = { modelFileName = it },
+                            label = { Text("Model File Name") },
+                            modifier = Modifier.weight(1f),
+                            singleLine = true,
+                            enabled = uiState !is AgentUiState.Loading && uiState !is AgentUiState.Generating
+                        )
+                        Button(
+                            onClick = {
+                                requestBatteryExemption()
+                                viewModel.initializeModelFromDownloads(modelFileName)
+                            },
+                            enabled = uiState !is AgentUiState.Loading && uiState !is AgentUiState.Generating
+                        ) {
+                            Text("Load")
+                        }
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(12.dp))
+
+                // Middle Section: Session Message History Log
+                Card(
+                    modifier = Modifier
+                        .weight(1f)
+                        .fillMaxWidth()
+                ) {
+                    val scrollState = rememberScrollState()
+                    Column(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .padding(12.dp)
+                            .verticalScroll(scrollState),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        val statusBanner = when (uiState) {
+                            is AgentUiState.Ready -> "Engine ready. Enter a command below."
+                            is AgentUiState.Generating -> "Thinking and executing tools..."
+                            is AgentUiState.Loading -> (uiState as AgentUiState.Loading).message
+                            is AgentUiState.Error -> "Error: ${(uiState as AgentUiState.Error).message}"
+                            else -> "Model offline."
+                        }
+
+                        Text(
+                            text = "Status: $statusBanner",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.primary
+                        )
+                        Divider(modifier = Modifier.padding(vertical = 4.dp))
+
+                        if (currentSession.messages.isEmpty()) {
+                            Text(
+                                text = "Thread initialized. Type a prompt or task below.",
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.outline
+                            )
+                        } else {
+                            currentSession.messages.forEach { msg ->
+                                Text(
+                                    text = "${msg.sender}: ${msg.text}",
+                                    style = MaterialTheme.typography.bodyMedium
+                                )
+                            }
+                        }
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(12.dp))
+
+                // Bottom Section: Prompt Input & Send
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    TextField(
+                        value = inputQuery,
+                        onValueChange = { inputQuery = it },
+                        label = { Text("Ask Muse...") },
+                        modifier = Modifier.weight(1f),
+                        enabled = uiState !is AgentUiState.Loading && uiState !is AgentUiState.Generating
+                    )
+
+                    Button(
+                        onClick = {
+                            if (inputQuery.isNotBlank()) {
+                                val query = inputQuery
+                                inputQuery = ""
+                                viewModel.generateResponseForCurrentSession(query)
+                            }
+                        },
+                        enabled = (uiState !is AgentUiState.Loading && uiState !is AgentUiState.Generating) && inputQuery.isNotBlank()
+                    ) {
+                        Text("Send")
+                    }
+                }
             }
         }
     }
