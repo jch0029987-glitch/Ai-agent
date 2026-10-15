@@ -22,7 +22,6 @@ object LlamaServerManager {
                 return 3
             }
         }
-        // Tensor G4 prime (1x Cortex-X4) + 4x Cortex-A720 performance cores = 4 threads optimal
         return 4
     }
 
@@ -57,7 +56,7 @@ object LlamaServerManager {
                 "--threads-batch", threadCount.toString(),
                 "--batch-size", "512",
                 "--ubatch-size", "128",
-                "--flash-attn", "on",       // FlashAttention for reduced KV cache overhead
+                "--flash-attn", "on",
                 "--port", "8080",
                 "--host", "0.0.0.0"
             )
@@ -69,6 +68,10 @@ object LlamaServerManager {
 
             pb.directory(context.filesDir)
             pb.redirectErrorStream(true)
+            
+            // FIX: Redirect process output to a log file instead of leaving an unconsumed pipe buffer
+            val logFile = File(context.filesDir, "llama_server_output.log")
+            pb.redirectOutput(ProcessBuilder.Redirect.to(logFile))
 
             val process = pb.start()
             serverProcess = process
@@ -76,8 +79,7 @@ object LlamaServerManager {
             Thread.sleep(600)
 
             if (!process.isAlive) {
-                val reader = process.inputStream.bufferedReader()
-                lastErrorReason = reader.readText().trim()
+                lastErrorReason = if (logFile.exists()) logFile.readText().takeLast(500) else "Unknown process failure"
                 serverProcess = null
                 return false
             }
