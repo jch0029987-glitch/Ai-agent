@@ -254,12 +254,14 @@ fun AgentDashboard(
                                 val externalFile = File("/sdcard/Download/models/$modelFileName")
                                 val internalFile = File(context.filesDir, modelFileName)
 
-                                val targetPath = if (externalFile.exists()) {
+                                val targetPath = if (internalFile.exists() && internalFile.length() > 0) {
+                                    withContext(Dispatchers.Main) {
+                                        outputLog += "-> Using existing internal model: ${internalFile.absolutePath}\n"
+                                    }
+                                    internalFile.absolutePath
+                                } else if (externalFile.exists()) {
                                     withContext(Dispatchers.Main) {
                                         outputLog += "-> Copying fresh model from external storage to internal app directory...\n"
-                                    }
-                                    if (internalFile.exists()) {
-                                        internalFile.delete()
                                     }
                                     externalFile.inputStream().use { input ->
                                         internalFile.outputStream().use { output ->
@@ -268,11 +270,6 @@ fun AgentDashboard(
                                     }
                                     withContext(Dispatchers.Main) {
                                         outputLog += "-> Copy complete: ${internalFile.absolutePath}\n"
-                                    }
-                                    internalFile.absolutePath
-                                } else if (internalFile.exists() && internalFile.length() > 0) {
-                                    withContext(Dispatchers.Main) {
-                                        outputLog += "-> Using existing internal model: ${internalFile.absolutePath}\n"
                                     }
                                     internalFile.absolutePath
                                 } else {
