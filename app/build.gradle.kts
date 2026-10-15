@@ -4,7 +4,8 @@ plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.android)
     alias(libs.plugins.kotlin.compose)
-    kotlin("plugin.serialization") version "2.0.0" // Required for Ktor JSON serialization
+    alias(libs.plugins.ksp) // <-- Added KSP plugin for Room code generation
+    kotlin("plugin.serialization") version "2.2.21" // Aligned with kotlin version 2.2.21
 }
 
 val localPropertiesFile = rootProject.file("local.properties")
@@ -104,6 +105,11 @@ dependencies {
     implementation("androidx.activity:activity-compose:1.10.0")
     implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.8.7")
 
+    // Room Database (SQLite Persistence for Chat Sessions & Messages)
+    implementation(libs.androidx.room.runtime)
+    implementation(libs.androidx.room.ktx)
+    ksp(libs.androidx.room.compiler)
+
     // Ktor Client (for GitHub API & Outgoing Webhooks)
     implementation("io.ktor:ktor-client-core:3.0.0")
     implementation("io.ktor:ktor-client-cio:3.0.0")
@@ -126,4 +132,3 @@ dependencies {
     debugImplementation("androidx.compose.ui:ui-tooling")
     debugImplementation("androidx.compose.ui:ui-test-manifest")
 }
-
