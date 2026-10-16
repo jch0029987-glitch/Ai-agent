@@ -111,7 +111,7 @@ dependencies {
 
     // Google MediaPipe GenAI (Native on-device LLM hardware acceleration)
     implementation("com.google.mediapipe:tasks-genai:0.10.27")
-    implementation("com.google.ai.edge.litertlm:litertlm-android:latest.release")
+    implementation(libs.litertlm.android)
     // Ktor Client (for remote API calls & webhooks)
     implementation("io.ktor:ktor-client-core:3.0.0")
     implementation("io.ktor:ktor-client-cio:3.0.0")
