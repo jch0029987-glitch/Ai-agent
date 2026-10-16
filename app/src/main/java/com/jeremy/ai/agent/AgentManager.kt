@@ -16,14 +16,32 @@ class AgentManager(private val context: Context) {
 
     suspend fun setupEngineFromStorage(modelPathOrName: String): Boolean = withContext(Dispatchers.IO) {
         try {
-            val targetPath = if (modelPathOrName.isBlank() || modelPathOrName == "model.gguf" || modelPathOrName == "model.bin") {
-                File(context.filesDir, "model.bin").absolutePath
+            val fileName = if (modelPathOrName.isBlank() || modelPathOrName == "model.gguf") {
+                "model.bin"
             } else {
                 modelPathOrName
             }
 
+            // 1. If an absolute path is provided, use it directly
+            val targetFile = if (fileName.startsWith("/")) {
+                File(fileName)
+            } else {
+                // 2. Check /sdcard/Download/models/ first
+                val sdcardModelsFolder = File("/sdcard/Download/models", fileName)
+                // 3. Check /sdcard/Download/ fallback
+                val sdcardDownloadFolder = File("/sdcard/Download", fileName)
+                // 4. Internal app files storage fallback
+                val internalFilesFolder = File(context.filesDir, fileName)
+
+                when {
+                    sdcardModelsFolder.exists() -> sdcardModelsFolder
+                    sdcardDownloadFolder.exists() -> sdcardDownloadFolder
+                    else -> internalFilesFolder
+                }
+            }
+
             val options = LlmInference.LlmInferenceOptions.builder()
-                .setModelPath(targetPath)
+                .setModelPath(targetFile.absolutePath)
                 .setMaxTokens(1024)
                 .build()
 
@@ -44,7 +62,6 @@ class AgentManager(private val context: Context) {
         val trimmedPrompt = prompt.trim()
         val lowerPrompt = trimmedPrompt.lowercase()
 
-        // Action keywords that must trigger the Tool Agent Loop
         val actionKeywords = listOf("open", "launch", "click", "tap", "type", "get", "check", "list", "show", "press", "find", "task:")
         val isActionCommand = actionKeywords.any { lowerPrompt.contains(it) }
 
