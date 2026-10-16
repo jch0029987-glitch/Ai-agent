@@ -5,6 +5,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
@@ -77,7 +78,7 @@ fun AgentChatScreen(
             )
         }
 
-        Spacer(modifier = Modifier.height(12.dp))
+        Spacer(modifier, Modifier.height(12.dp))
 
         // Chat Message Thread from Current Session
         LazyColumn(modifier = Modifier.weight(1f)) {
