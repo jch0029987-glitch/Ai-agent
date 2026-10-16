@@ -11,7 +11,6 @@ import com.google.ai.edge.litertlm.Contents
 import com.google.ai.edge.litertlm.ConversationConfig
 import com.google.ai.edge.litertlm.Engine
 import com.google.ai.edge.litertlm.EngineConfig
-import com.google.ai.edge.litertlm.Message
 import com.jeremy.ai.agent.services.AgentNotificationListener
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.sync.Mutex
@@ -146,12 +145,11 @@ class AgentManager(private val context: Context) {
 
             if (isCasualChat) {
                 val conversationConfig = ConversationConfig(
-                    // systemInstruction expects Message
-                    systemInstruction = Message.of("You are a helpful, concise AI assistant running locally on a Pixel 9. Respond in 1-2 brief English sentences only.")
+                    // Correct: systemInstruction expects Contents.of(...) per LiteRT-LM specs
+                    systemInstruction = Contents.of("You are a helpful, concise AI assistant running locally on a Pixel 9. Respond in 1-2 brief English sentences only.")
                 )
                 
                 localEngine.createConversation(conversationConfig).use { conversation ->
-                    // sendMessage expects Contents
                     val response = conversation.sendMessage(Contents.of(trimmedPrompt))
                     val resultText = response.toString()
                     onToken(resultText)
@@ -193,12 +191,11 @@ class AgentManager(private val context: Context) {
                 """.trimIndent()
 
                 val conversationConfig = ConversationConfig(
-                    // systemInstruction expects Message
-                    systemInstruction = Message.of(systemInstructionText)
+                    // Correct: systemInstruction expects Contents.of(...) per LiteRT-LM specs
+                    systemInstruction = Contents.of(systemInstructionText)
                 )
 
                 val rawModelOutput = localEngine.createConversation(conversationConfig).use { conversation ->
-                    // sendMessage expects Contents
                     conversation.sendMessage(Contents.of("Task: $currentGoal\nTOOL:"))
                 }.toString()
 
