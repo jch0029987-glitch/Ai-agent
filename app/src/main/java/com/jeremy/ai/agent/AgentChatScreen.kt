@@ -7,12 +7,15 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.viewmodel.compose.viewModel
 import com.jeremy.ai.agent.AgentUiState
 import com.jeremy.ai.agent.AgentViewModel
-import kotlinx.coroutines.launch
 
 @Composable
-fun AgentChatScreen(viewModel: AgentViewModel) {
+fun AgentChatScreen(
+    viewModel: AgentViewModel = viewModel(),
+    requestBatteryExemption: () -> Unit = {}
+) {
     val uiState by viewModel.uiState.collectAsState()
     val currentSession = viewModel.currentSession
 
@@ -20,7 +23,16 @@ fun AgentChatScreen(viewModel: AgentViewModel) {
     var promptInput by remember { mutableStateOf("") }
 
     Column(modifier = Modifier.fillMaxSize().padding(16.dp)) {
-        Text("Muse AI Agent (MediaPipe)", style = MaterialTheme.typography.headlineSmall)
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text("Muse AI Agent (MediaPipe)", style = MaterialTheme.typography.headlineSmall)
+            Button(onClick = requestBatteryExemption) {
+                Text("Battery Opt")
+            }
+        }
         Spacer(modifier = Modifier.height(8.dp))
 
         // Model Path Input Row
