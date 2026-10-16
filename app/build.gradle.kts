@@ -4,8 +4,8 @@ plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.android)
     alias(libs.plugins.kotlin.compose)
-    alias(libs.plugins.ksp) // <-- Added KSP plugin for Room code generation
-    kotlin("plugin.serialization") version "2.2.21" // Aligned with kotlin version 2.2.21
+    alias(libs.plugins.ksp)
+    kotlin("plugin.serialization") version "2.2.21"
 }
 
 val localPropertiesFile = rootProject.file("local.properties")
@@ -75,7 +75,6 @@ android {
         jvmTarget = "11"
     }
 
-    // META-INF exclusions and legacy packaging for uncompressed native .so libraries
     packaging {
         jniLibs {
             useLegacyPackaging = true
@@ -105,22 +104,25 @@ dependencies {
     implementation("androidx.activity:activity-compose:1.10.0")
     implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.8.7")
 
-    // Room Database (SQLite Persistence for Chat Sessions & Messages)
+    // Room Database
     implementation(libs.androidx.room.runtime)
     implementation(libs.androidx.room.ktx)
     ksp(libs.androidx.room.compiler)
 
-    // Ktor Client (for GitHub API & Outgoing Webhooks)
+    // Google MediaPipe GenAI (Native on-device LLM hardware acceleration)
+    implementation("com.google.mediapipe:tasks-genai:0.10.27")
+
+    // Ktor Client (for remote API calls & webhooks)
     implementation("io.ktor:ktor-client-core:3.0.0")
     implementation("io.ktor:ktor-client-cio:3.0.0")
     implementation("io.ktor:ktor-client-content-negotiation:3.0.0")
 
-    // Ktor Server (for Incoming Webhook Listener)
+    // Ktor Server (for local-hosted remote access endpoints)
     implementation("io.ktor:ktor-server-core:3.0.0")
     implementation("io.ktor:ktor-server-netty:3.0.0")
     implementation("io.ktor:ktor-server-content-negotiation:3.0.0")
 
-    // Kotlinx Serialization for JSON payloads
+    // Kotlinx Serialization
     implementation("io.ktor:ktor-serialization-kotlinx-json:3.0.0")
     implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.7.3")
 
