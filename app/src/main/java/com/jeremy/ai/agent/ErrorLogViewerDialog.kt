@@ -16,6 +16,8 @@ import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.launch
 import java.io.File
 
+
+
 @Composable
 fun ErrorLogViewerDialog(onDismiss: () -> Unit) {
     var rawLogContent by remember { mutableStateOf("Loading logs...") }
