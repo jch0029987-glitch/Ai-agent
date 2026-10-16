@@ -150,8 +150,7 @@ class AgentManager(private val context: Context) {
                 )
                 
                 localEngine.createConversation(conversationConfig).use { conversation ->
-                    // Wrap with Contents.of() to fulfill Contents type contract
-                    val response = conversation.sendMessage(Contents.of(trimmedPrompt))
+                    val response = conversation.sendMessage(Contents.of(Message.of(trimmedPrompt)))
                     val resultText = response.toString()
                     onToken(resultText)
                     return@withContext resultText
@@ -196,8 +195,7 @@ class AgentManager(private val context: Context) {
                 )
 
                 val rawModelOutput = localEngine.createConversation(conversationConfig).use { conversation ->
-                    // Wrap with Contents.of() to fulfill Contents type contract
-                    conversation.sendMessage(Contents.of("Task: $currentGoal\nTOOL:"))
+                    conversation.sendMessage(Contents.of(Message.of("Task: $currentGoal\nTOOL:")))
                 }.toString()
 
                 val toolIndex = rawModelOutput.indexOf("TOOL:")
