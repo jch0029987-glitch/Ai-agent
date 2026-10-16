@@ -1,6 +1,7 @@
 package com.jeremy.ai.agent
 
 import android.app.Application
+import android.content.Context
 import android.util.Log
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -29,7 +30,7 @@ data class ChatSession(
 )
 
 class AgentViewModel(application: Application) : AndroidViewModel(application) {
-    private val appContext: Context get() = getApplication()
+    private val appContext: Context get() = getApplication<Application>()
     private val agentManager = AgentManager(application)
     private val chatDao = AppDatabase.getDatabase(application).chatDao()
 
