@@ -5,10 +5,10 @@ coreKtx = "1.16.0"
 espressoCore = "3.6.1"
 junit = "4.13.2"
 junitVersion = "1.2.1"
-kotlin = "2.4.0"
+kotlin = "2.2.21"
 material = "1.12.0"
 room = "2.6.1"
-ksp = "2.3.12" # KSP release compatible with Kotlin 2.4.0
+ksp = "2.2.21-2.0.4" # Matches your original working setup
 
 [libraries]
 androidx-appcompat = { group = "androidx.appcompat", name = "appcompat", version.ref = "appcompat" }
@@ -20,6 +20,7 @@ material = { group = "com.google.android.material", name = "material", version.r
 androidx-room-runtime = { group = "androidx.room", name = "room-runtime", version.ref = "room" }
 androidx-room-ktx = { group = "androidx.room", name = "room-ktx", version.ref = "room" }
 androidx-room-compiler = { group = "androidx.room", name = "room-compiler", version.ref = "room" }
+litertlm-android = { group = "com.google.ai.edge.litertlm", name = "litertlm-android", version = "0.18.0" }
 
 [plugins]
 android-application = { id = "com.android.application", version.ref = "agp" }
