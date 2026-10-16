@@ -2,8 +2,6 @@ name: Build Complete Signed APK (MediaPipe GenAI)
 
 on:
   workflow_dispatch:
-  push:
-    branches: [ main ]
 
 jobs:
   build-all:
