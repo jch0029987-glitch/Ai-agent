@@ -1,9 +1,14 @@
 package com.jeremy.ai.backend
 
+import com.jeremy.ai.agent.AgentBridge
+import io.ktor.http.*
 import io.ktor.server.application.*
+import io.ktor.server.response.*
 import io.ktor.server.routing.*
 import io.ktor.server.websocket.*
 import io.ktor.websocket.*
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 import java.util.Collections
@@ -22,38 +27,50 @@ data class ServerResponse(
 )
 
 fun Application.configureRouting() {
-    // Keep track of connected clients (Web UI / TV apps)
     val activeConnections = Collections.synchronizedSet(hashSetOf<WebSocketSession>())
 
     routing {
         get("/health") {
-            call.respond(mapOf("status" to "healthy", "service" to "muse-backend-gateway"))
+            call.respond(mapOf("status" to "healthy", "service" to "agent-backend-gateway"))
         }
 
-        // Unified WebSocket endpoint for Web UI and TV app streaming
+        // Unified WebSocket endpoint streaming real-time tokens to Web UI and TV app
         webSocket("/ws/agent") {
             activeConnections.add(this)
             try {
                 for (frame in incoming) {
                     if (frame is Frame.Text) {
                         val text = frame.readText()
-                        val clientMsg = Json.decodeFromString<ClientMessage>(text)
+                        val clientMsg = try {
+                            Json.decodeFromString<ClientMessage>(text)
+                        } catch (e: Exception) {
+                            ClientMessage(clientId = "unknown", deviceType = "unknown", prompt = text)
+                        }
 
-                        // Route request to local agent runner or process via local pipeline
-                        val simulatedTokens = listOf("Processing", " query", " from", " ${clientMsg.deviceType}:", " Done!")
-                        
-                        for ((index, token) in simulatedTokens.withIndex()) {
-                            val response = ServerResponse(
-                                token = token,
-                                isFinished = index == simulatedTokens.size - 1
-                            )
-                            outgoing.send(Frame.Text(Json.encodeToString(ServerResponse.serializer(), response)))
-                            kotlinx.coroutines.delay(80)
+                        // Stream real-time tokens back to the Web UI / TV client using AgentBridge
+                        try {
+                            withContext(Dispatchers.Default) {
+                                AgentBridge.processPrompt(clientMsg.prompt) { token ->
+                                    val chunk = ServerResponse(token = token, isFinished = false)
+                                    // Send individual token chunks non-blocking
+                                    kotlinx.coroutines.runBlocking {
+                                        outgoing.send(Frame.Text(Json.encodeToString(ServerResponse.serializer(), chunk)))
+                                    }
+                                }
+                            }
+
+                            // Send completion signal
+                            val finalChunk = ServerResponse(token = "", isFinished = true)
+                            outgoing.send(Frame.Text(Json.encodeToString(ServerResponse.serializer(), finalChunk)))
+
+                        } catch (e: Exception) {
+                            val errorChunk = ServerResponse(token = "\nError executing prompt: ${e.localizedMessage}", isFinished = true)
+                            outgoing.send(Frame.Text(Json.encodeToString(ServerResponse.serializer(), errorChunk)))
                         }
                     }
                 }
             } catch (e: Exception) {
-                // Handle disconnection or socket errors gracefully
+                // Handle socket disconnects safely
             } finally {
                 activeConnections.remove(this)
             }
