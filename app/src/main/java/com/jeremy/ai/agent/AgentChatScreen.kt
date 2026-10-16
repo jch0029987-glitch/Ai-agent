@@ -20,6 +20,10 @@ import com.jeremy.ai.agent.AgentViewModel
 import kotlinx.coroutines.launch
 import java.io.File
 import android.os.Environment
+import androidx.compose.material.icons.filled.Warning
+import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.filled.Clear
+
 
 @Composable
 fun AgentChatScreen(
