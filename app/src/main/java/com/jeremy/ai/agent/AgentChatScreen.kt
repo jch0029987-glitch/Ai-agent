@@ -78,7 +78,7 @@ fun AgentChatScreen(
             )
         }
 
-        Spacer(modifier, Modifier.height(12.dp))
+        Spacer(modifier = Modifier.height(12.dp))
 
         // Chat Message Thread from Current Session
         LazyColumn(modifier = Modifier.weight(1f)) {
