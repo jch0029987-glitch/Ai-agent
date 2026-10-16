@@ -18,11 +18,11 @@ class AgentVoiceInteractionSessionService : VoiceInteractionSessionService() {
 }
 
 class AgentVoiceInteractionSession(private val context: Context) : VoiceInteractionSession(context) {
-    override fun onPrepareToShow(args: Bundle?, showFlags: Int) {
-        super.onPrepareToShow(args, showFlags)
+    override fun onShow(args: Bundle?, showFlags: Int) {
+        super.onShow(args, showFlags)
         hide() // Hide default empty session frame
         
-        val intent = Intent(context, MainActivity::class.java).apply {
+        val intent = Intent(context, MainActivity::class.java).app {
             addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
             putExtra("TRIGGERED_BY_ASSISTANT", true)
         }
