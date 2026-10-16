@@ -1,16 +1,16 @@
-package com.jeremy.ai.backend
+package com.jeremy.ai.agent
 
+import com.jeremy.ai.backend.configureRouting
 import io.ktor.serialization.kotlinx.json.*
 import io.ktor.server.application.*
 import io.ktor.server.engine.*
 import io.ktor.server.netty.*
-import io.ktor.server.plugins.calllogging.*
+import io.ktor.server.plugins.calllogging.CallLogging
 import io.ktor.server.plugins.contentnegotiation.*
 import io.ktor.server.plugins.cors.routing.*
 import io.ktor.server.websocket.*
-import io.ktor.server.routing.*
 import kotlinx.serialization.json.Json
-import java.time.Duration
+import kotlin.time.Duration.Companion.seconds
 
 fun main() {
     embeddedServer(Netty, port = 8080, host = "0.0.0.0", module = Application::module)
@@ -28,19 +28,17 @@ fun Application.module() {
     
     install(CallLogging)
 
-    // Allow your Web UI and TV client to connect cleanly
     install(CORS) {
-        anyHost() // Adjust to specific domains/IPs in production
+        anyHost()
         allowHeader(io.ktor.http.HttpHeaders.ContentType)
         allowHeader(io.ktor.http.HttpHeaders.Authorization)
         allowMethod(io.ktor.http.HttpMethod.Post)
         allowMethod(io.ktor.http.HttpMethod.Get)
     }
 
-    // Enable WebSockets for streaming AI response tokens to Web UI / TV
     install(WebSockets) {
-        pingPeriod = Duration.ofSeconds(15)
-        timeout = Duration.ofSeconds(30)
+        pingPeriod = 15.seconds
+        timeout = 30.seconds
         maxFrameSize = Long.MAX_VALUE
         masking = false
     }
