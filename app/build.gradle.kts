@@ -104,6 +104,7 @@ dependencies {
     implementation("androidx.activity:activity-compose:1.10.0")
     implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.8.7")
     implementation("androidx.compose.material:material-icons-extended")
+    
     // Room Database
     implementation(libs.androidx.room.runtime)
     implementation(libs.androidx.room.ktx)
@@ -112,6 +113,7 @@ dependencies {
     // Google MediaPipe GenAI (Native on-device LLM hardware acceleration)
     implementation("com.google.mediapipe:tasks-genai:0.10.27")
     implementation(libs.litertlm.android)
+    
     // Ktor Client (for remote API calls & webhooks)
     implementation("io.ktor:ktor-client-core:3.0.0")
     implementation("io.ktor:ktor-client-cio:3.0.0")
@@ -121,6 +123,8 @@ dependencies {
     implementation("io.ktor:ktor-server-core:3.0.0")
     implementation("io.ktor:ktor-server-netty:3.0.0")
     implementation("io.ktor:ktor-server-content-negotiation:3.0.0")
+    implementation("io.ktor:ktor-server-websockets:3.0.0") // <-- Required for real-time Web/TV token streaming
+    implementation("io.ktor:ktor-server-cors:3.0.0")     // <-- Recommended for cross-origin Web UI access
 
     // Kotlinx Serialization
     implementation("io.ktor:ktor-serialization-kotlinx-json:3.0.0")
