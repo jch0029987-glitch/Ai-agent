@@ -41,19 +41,19 @@ class AgentService : Service() {
         }
 
         isRunning = true
-        Log.i(TAG, "OpenClaw/Muse Node Gateway Service Started.")
+        Log.i(TAG, "Muse AI Node Gateway Service Started.")
 
-        // 1. Ensure native llama-server starts up / stays alive inside the service
-        ensureServerRunning()
+        // Initialize MediaPipe engine background instance
+        initializeMediaPipeEngine()
         
-        // 2. Start background autonomous monitoring loop
+        // Start background autonomous monitoring loop
         startAutonomousBackgroundLoop()
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         val notification: Notification = NotificationCompat.Builder(this, CHANNEL_ID)
             .setContentTitle("Local AI Agent Active")
-            .setContentText("Connected to native llama-server gateway.")
+            .setContentText("Connected to native MediaPipe LLM engine.")
             .setSmallIcon(android.R.drawable.ic_menu_compass)
             .setOngoing(true)
             .build()
@@ -61,21 +61,32 @@ class AgentService : Service() {
         // Promote to Foreground Service immediately to avoid LMK termination
         startForeground(NOTIFICATION_ID, notification)
 
+        val prompt = intent?.getStringExtra("EXTRA_PROMPT")
+        if (!prompt.isNullOrBlank()) {
+            serviceScope.launch {
+                val result = agentManager.promptAgent(prompt)
+                NotificationHelper.postMessage(
+                    applicationContext,
+                    "Agent Task Result",
+                    result
+                )
+            }
+        }
+
         return START_STICKY
     }
 
-    private fun ensureServerRunning() {
+    private fun initializeMediaPipeEngine() {
         serviceScope.launch(Dispatchers.IO) {
             try {
-                // Pass the default internal model path or fallback file name
-                val started = LlamaServerManager.startServer(applicationContext, "model.gguf")
-                if (started) {
-                    Log.i(TAG, "Background llama-server verified and running under AgentService.")
+                val success = agentManager.setupEngineFromStorage("model.bin")
+                if (success) {
+                    Log.i(TAG, "Background MediaPipe engine successfully initialized under AgentService.")
                 } else {
-                    Log.e(TAG, "Failed to start server in background: ${LlamaServerManager.lastErrorReason}")
+                    Log.e(TAG, "Failed to initialize MediaPipe engine in background.")
                 }
             } catch (e: Exception) {
-                Log.e(TAG, "Error ensuring background server state: ${e.localizedMessage}")
+                Log.e(TAG, "Error initializing MediaPipe engine: ${e.localizedMessage}")
             }
         }
     }
@@ -119,6 +130,7 @@ class AgentService : Service() {
     override fun onDestroy() {
         super.onDestroy()
         isRunning = false
+        agentManager.shutdown()
         serviceJob.cancel()
 
         try {
@@ -131,8 +143,6 @@ class AgentService : Service() {
             // Ignore release exceptions
         }
 
-        // Clean up native server process when service terminates
-        LlamaServerManager.stopServer()
         Log.i(TAG, "Agent Gateway Service Destroyed.")
     }
 }
