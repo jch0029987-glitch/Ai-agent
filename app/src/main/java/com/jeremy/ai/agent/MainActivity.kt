@@ -10,8 +10,10 @@ import android.provider.Settings
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.safeDrawingPadding
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.ui.Modifier
@@ -41,14 +43,19 @@ class MainActivity : ComponentActivity() {
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
+        // Enforce Android 16 mandatory edge-to-edge layout display
+        enableEdgeToEdge()
         super.onCreate(savedInstanceState)
+        
         setupGlobalCrashHandler()
         checkAndRequestPermissions()
 
         setContent {
             MaterialTheme {
                 Surface(
-                    modifier = Modifier.fillMaxSize(),
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .safeDrawingPadding(), // Protects content from overlapping system bars & cutouts
                     color = MaterialTheme.colorScheme.background
                 ) {
                     AgentChatScreen(
