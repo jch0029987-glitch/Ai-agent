@@ -7,6 +7,7 @@ import android.os.Looper
 import android.util.Log
 import android.widget.Toast
 import com.google.ai.edge.litertlm.Backend
+import com.google.ai.edge.litertlm.Contents
 import com.google.ai.edge.litertlm.ConversationConfig
 import com.google.ai.edge.litertlm.Engine
 import com.google.ai.edge.litertlm.EngineConfig
@@ -149,8 +150,8 @@ class AgentManager(private val context: Context) {
                 )
                 
                 localEngine.createConversation(conversationConfig).use { conversation ->
-                    // Correctly wrap user input with Message.of() to satisfy LiteRT-LM Message type signature
-                    val response = conversation.sendMessage(Message.of(trimmedPrompt))
+                    // Wrap with Contents.of() to fulfill Contents type contract
+                    val response = conversation.sendMessage(Contents.of(trimmedPrompt))
                     val resultText = response.toString()
                     onToken(resultText)
                     return@withContext resultText
@@ -195,8 +196,8 @@ class AgentManager(private val context: Context) {
                 )
 
                 val rawModelOutput = localEngine.createConversation(conversationConfig).use { conversation ->
-                    // Correctly wrap task prompt using Message.of()
-                    conversation.sendMessage(Message.of("Task: $currentGoal\nTOOL:"))
+                    // Wrap with Contents.of() to fulfill Contents type contract
+                    conversation.sendMessage(Contents.of("Task: $currentGoal\nTOOL:"))
                 }.toString()
 
                 val toolIndex = rawModelOutput.indexOf("TOOL:")
