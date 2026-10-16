@@ -150,7 +150,8 @@ class AgentManager(private val context: Context) {
                 )
                 
                 localEngine.createConversation(conversationConfig).use { conversation ->
-                    val response = conversation.sendMessage(Contents.of(Message.of(trimmedPrompt)))
+                    // Correct: Contents.of() accepts the raw String directly
+                    val response = conversation.sendMessage(Contents.of(trimmedPrompt))
                     val resultText = response.toString()
                     onToken(resultText)
                     return@withContext resultText
@@ -195,7 +196,8 @@ class AgentManager(private val context: Context) {
                 )
 
                 val rawModelOutput = localEngine.createConversation(conversationConfig).use { conversation ->
-                    conversation.sendMessage(Contents.of(Message.of("Task: $currentGoal\nTOOL:")))
+                    // Correct: Contents.of() accepts the raw String directly
+                    conversation.sendMessage(Contents.of("Task: $currentGoal\nTOOL:"))
                 }.toString()
 
                 val toolIndex = rawModelOutput.indexOf("TOOL:")
