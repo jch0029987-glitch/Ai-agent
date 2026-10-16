@@ -2,8 +2,15 @@ package com.jeremy.ai.agent
 
 import android.content.Context
 import android.os.Environment
+import android.os.Handler
+import android.os.Looper
 import android.util.Log
-import com.google.ai.edge.litertlm.LlmInference
+import android.widget.Toast
+import com.google.ai.edge.litertlm.Backend
+import com.google.ai.edge.litertlm.ConversationConfig
+import com.google.ai.edge.litertlm.Engine
+import com.google.ai.edge.litertlm.EngineConfig
+import com.google.ai.edge.litertlm.Message
 import com.jeremy.ai.agent.services.AgentNotificationListener
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.sync.Mutex
@@ -12,10 +19,10 @@ import kotlinx.coroutines.withContext
 import java.io.File
 
 class AgentManager(private val context: Context) {
-    private var llmInference: LlmInference? = null
+    private var engine: Engine? = null
     private var isInitialized = false
 
-    // Strict mutex lock to serialize all C++/JNI engine calls and prevent concurrency crashes
+    // Mutex lock to serialize native C++/JNI engine calls and prevent race crashes
     private val inferenceMutex = Mutex()
 
     private val githubClient = GitHubToolClient()
@@ -25,7 +32,13 @@ class AgentManager(private val context: Context) {
         private const val TAG = "AgentManager"
     }
 
-    suspend fun setupEngineFromStorage(modelPathOrName: String): Result<Boolean> = withContext(Dispatchers.IO) {
+    private fun showToast(message: String) {
+        Handler(Looper.getMainLooper()).post {
+            Toast.makeText(context, message, Toast.LENGTH_LONG).show()
+        }
+    }
+
+    suspend fun setupEngineFromStorage(modelPathOrName: String = "qwen.task"): Result<Boolean> = withContext(Dispatchers.IO) {
         inferenceMutex.withLock {
             try {
                 val fileName = modelPathOrName.trim()
@@ -46,11 +59,12 @@ class AgentManager(private val context: Context) {
                     }
                 }
 
-                Log.i(TAG, "Targeting LiteRT-LM model file: ${targetFile.absolutePath} (Exists: ${targetFile.exists()})")
+                Log.i(TAG, "Targeting model file: ${targetFile.absolutePath} (Exists: ${targetFile.exists()})")
 
                 if (!targetFile.exists()) {
                     val errorMsg = "File does not exist at path: ${targetFile.absolutePath}"
                     Log.e(TAG, errorMsg)
+                    showToast("Error: Model file not found at $fileName")
                     isInitialized = false
                     return@withContext Result.failure(IllegalArgumentException(errorMsg))
                 }
@@ -58,28 +72,55 @@ class AgentManager(private val context: Context) {
                 if (!targetFile.canRead()) {
                     val errorMsg = "Permission denied: Cannot read file at ${targetFile.absolutePath}"
                     Log.e(TAG, errorMsg)
+                    showToast("Error: Permission denied reading $fileName")
                     isInitialized = false
                     return@withContext Result.failure(SecurityException(errorMsg))
                 }
 
-                // Close any existing native engine handles before initializing
+                // Clean up previous native allocations before binding new engine
                 shutdownEngineInternal()
 
-                // 2. Configure LiteRT-LM LlmInference Options
-                val options = LlmInference.LlmInferenceOptions.builder()
-                    .setModelPath(targetFile.absolutePath)
-                    .setMaxTokens(1024)
-                    .setPreferredBackend(LlmInference.Backend.GPU) // Can fall back to CPU if driver issues persist
-                    .build()
+                val nativeLibDir = context.applicationInfo.nativeLibraryDir
+                var activeBackendName = "NPU (Tensor TPU)"
 
-                Log.i(TAG, "Initializing LiteRT-LM runtime backend...")
-                llmInference = LlmInference.createFromOptions(context, options)
+                // 2. Configure LiteRT-LM Engine with cascading backend fallback: NPU -> GPU -> CPU
+                val engineConfig = try {
+                    Log.i(TAG, "Attempting to initialize on Tensor NPU...")
+                    EngineConfig(
+                        modelPath = targetFile.absolutePath,
+                        backend = Backend.NPU(nativeLibraryDir = nativeLibDir)
+                    )
+                } catch (eNpu: Exception) {
+                    Log.w(TAG, "NPU backend unavailable, falling back to GPU delegate", eNpu)
+                    activeBackendName = "GPU"
+                    try {
+                        EngineConfig(
+                            modelPath = targetFile.absolutePath,
+                            backend = Backend.GPU()
+                        )
+                    } catch (eGpu: Exception) {
+                        Log.w(TAG, "GPU backend unavailable, falling back to CPU", eGpu)
+                        activeBackendName = "CPU"
+                        EngineConfig(
+                            modelPath = targetFile.absolutePath,
+                            backend = Backend.CPU()
+                        )
+                    }
+                }
+
+                Log.i(TAG, "Initializing LiteRT-LM Engine on $activeBackendName...")
+                val newEngine = Engine(engineConfig)
+                newEngine.initialize()
+                engine = newEngine
                 isInitialized = true
-                Log.i(TAG, "LiteRT-LM engine successfully initialized!")
+
+                Log.i(TAG, "LiteRT-LM successfully initialized on $activeBackendName!")
+                showToast("LiteRT-LM Engine Ready [$activeBackendName]")
 
                 Result.success(true)
             } catch (e: Exception) {
-                Log.e(TAG, "LiteRT-LM engine initialization failure: ${e.localizedMessage}", e)
+                Log.e(TAG, "LiteRT-LM Engine initialization failure: ${e.localizedMessage}", e)
+                showToast("Engine Init Failed: ${e.localizedMessage}")
                 isInitialized = false
                 Result.failure(e)
             }
@@ -87,11 +128,10 @@ class AgentManager(private val context: Context) {
     }
 
     suspend fun promptAgent(prompt: String, onToken: (String) -> Unit = {}): String = withContext(Dispatchers.Default) {
-        // Enforce thread serialization: wait for any ongoing prompt generation to release the native JNI handle
         inferenceMutex.withLock {
-            val inference = llmInference
-            if (!isInitialized || inference == null) {
-                return@withContext "Error: LiteRT-LM engine offline or uninitialized."
+            val localEngine = engine
+            if (!isInitialized || localEngine == null) {
+                return@withContext "Error: LiteRT-LM Engine offline or uninitialized."
             }
 
             val trimmedPrompt = prompt.trim()
@@ -104,19 +144,16 @@ class AgentManager(private val context: Context) {
                                (lowerPrompt.matches(Regex("^(hi|hello|hey|sup|what's up|who are you|help|thanks|thank you).*")) || lowerPrompt.split(" ").size <= 2)
 
             if (isCasualChat) {
-                val chatPrompt = """
-                    <|im_start|>system
-                    You are a helpful, concise AI assistant running locally on a Pixel 9 device. Respond in 1-2 brief English sentences only.
-                    <|im_end|>
-                    <|im_start|>user
-                    $trimmedPrompt
-                    <|im_end|>
-                    <|im_start|>assistant
-                """.trimIndent()
-
-                val response = inference.generateResponse(chatPrompt)
-                onToken(response)
-                return@withContext response
+                val conversationConfig = ConversationConfig(
+                    systemInstruction = Message.of("You are a helpful, concise AI assistant running locally on a Pixel 9. Respond in 1-2 brief English sentences only.")
+                )
+                
+                localEngine.createConversation(conversationConfig).use { conversation ->
+                    val response = conversation.sendMessage(trimmedPrompt)
+                    val resultText = response.toString()
+                    onToken(resultText)
+                    return@withContext resultText
+                }
             }
 
             // --- Autonomous Agent Execution Loop ---
@@ -125,7 +162,6 @@ class AgentManager(private val context: Context) {
             val currentGoal = prompt
 
             for (step in 1..maxSteps) {
-                // Truncate screen and notification summaries to prevent context window token overflow
                 val rawNotification = AgentNotificationListener.getContextSummary()
                 val notificationContext = if (rawNotification.length > 300) rawNotification.take(300) + "... [truncated]" else rawNotification
 
@@ -133,8 +169,7 @@ class AgentManager(private val context: Context) {
                 val rawScreen = screenService?.getScreenContentSummary() ?: "Accessibility Service offline."
                 val screenContext = if (rawScreen.length > 500) rawScreen.take(500) + "... [truncated]" else rawScreen
 
-                val systemPrompt = """
-                    <|im_start|>system
+                val systemInstructionText = """
                     You are an autonomous Android action engine. You execute composite tasks step-by-step using tools.
                     
                     [RECENT NOTIFICATIONS]
@@ -152,15 +187,15 @@ class AgentManager(private val context: Context) {
                       ARG: argument_value
                     - Available tools: open_browser, github_get_issues, get_screen_content, get_recent_notifications, open_app, click_text, type_text, get_installed_apps, finish.
                     - When the overall task is completely fulfilled, use TOOL: finish with ARG: summary of results.
-                    <|im_end|>
-                    <|im_start|>user
-                    Task: $currentGoal
-                    <|im_end|>
-                    <|im_start|>assistant
-                    TOOL:
                 """.trimIndent()
 
-                val rawModelOutput = inference.generateResponse(systemPrompt)
+                val conversationConfig = ConversationConfig(
+                    systemInstruction = Message.of(systemInstructionText)
+                )
+
+                val rawModelOutput = localEngine.createConversation(conversationConfig).use { conversation ->
+                    conversation.sendMessage("Task: $currentGoal\nTOOL:")
+                }.toString()
 
                 val toolIndex = rawModelOutput.indexOf("TOOL:")
                 val cleanOutput = if (toolIndex != -1) rawModelOutput.substring(toolIndex) else rawModelOutput
@@ -207,11 +242,11 @@ class AgentManager(private val context: Context) {
     private fun shutdownEngineInternal() {
         if (isInitialized) {
             try {
-                llmInference?.close()
+                engine?.close()
             } catch (e: Exception) {
-                Log.e(TAG, "Error closing LiteRT-LM instance", e)
+                Log.e(TAG, "Error shutting down LiteRT-LM Engine", e)
             } finally {
-                llmInference = null
+                engine = null
                 isInitialized = false
             }
         }
