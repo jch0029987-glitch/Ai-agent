@@ -146,11 +146,12 @@ class AgentManager(private val context: Context) {
 
             if (isCasualChat) {
                 val conversationConfig = ConversationConfig(
+                    // systemInstruction expects Message
                     systemInstruction = Message.of("You are a helpful, concise AI assistant running locally on a Pixel 9. Respond in 1-2 brief English sentences only.")
                 )
                 
                 localEngine.createConversation(conversationConfig).use { conversation ->
-                    // Correct: Contents.of() accepts the raw String directly
+                    // sendMessage expects Contents
                     val response = conversation.sendMessage(Contents.of(trimmedPrompt))
                     val resultText = response.toString()
                     onToken(resultText)
@@ -192,11 +193,12 @@ class AgentManager(private val context: Context) {
                 """.trimIndent()
 
                 val conversationConfig = ConversationConfig(
+                    // systemInstruction expects Message
                     systemInstruction = Message.of(systemInstructionText)
                 )
 
                 val rawModelOutput = localEngine.createConversation(conversationConfig).use { conversation ->
-                    // Correct: Contents.of() accepts the raw String directly
+                    // sendMessage expects Contents
                     conversation.sendMessage(Contents.of("Task: $currentGoal\nTOOL:"))
                 }.toString()
 
