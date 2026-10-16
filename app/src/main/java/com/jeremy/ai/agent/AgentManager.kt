@@ -1,35 +1,54 @@
 package com.jeremy.ai.agent
 
 import android.content.Context
+import com.google.mediapipe.tasks.genai.llminference.LlmInference
 import com.jeremy.ai.agent.services.AgentNotificationListener
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import java.io.File
 
 class AgentManager(private val context: Context) {
-    private val bridge = LlamaBridge(context)
+    private var llmInference: LlmInference? = null
     private var isInitialized = false
 
     private val githubClient = GitHubToolClient()
     private val toolRouter = AgentToolRouter(context, githubClient)
 
-    var useCliMode: Boolean = false
-
     suspend fun setupEngineFromStorage(modelPathOrName: String): Boolean = withContext(Dispatchers.IO) {
-        isInitialized = bridge.initializeModel(modelPathOrName)
-        return@withContext isInitialized
+        try {
+            val targetPath = if (modelPathOrName.isBlank() || modelPathOrName == "model.gguf") {
+                File(context.filesDir, "model.bin").absolutePath
+            } else {
+                modelPathOrName
+            }
+
+            val options = LlmInference.LlmInferenceOptions.builder()
+                .setModelPath(targetPath)
+                .setMaxTokens(1024)
+                .setTemperature(0.7f)
+                .build()
+
+            llmInference = LlmInference.createFromOptions(context, options)
+            isInitialized = true
+            true
+        } catch (e: Exception) {
+            e.printStackTrace()
+            isInitialized = false
+            false
+        }
     }
 
     suspend fun promptAgent(prompt: String, onToken: (String) -> Unit = {}): String = withContext(Dispatchers.Default) {
-        if (!isInitialized) return@withContext "Error: Engine offline or uninitialized."
+        val inference = llmInference
+        if (!isInitialized || inference == null) return@withContext "Error: MediaPipe engine offline or uninitialized."
 
         val trimmedPrompt = prompt.trim()
         val lowerPrompt = trimmedPrompt.lowercase()
 
-        // Action keywords that must trigger the GBNF Tool Agent Loop
+        // Action keywords that must trigger the Tool Agent Loop
         val actionKeywords = listOf("open", "launch", "click", "tap", "type", "get", "check", "list", "show", "press", "find", "task:")
         val isActionCommand = actionKeywords.any { lowerPrompt.contains(it) }
 
-        // Only treat explicit greetings or short conversational text as casual chat
         val isCasualChat = !isActionCommand && 
                            (lowerPrompt.matches(Regex("^(hi|hello|hey|sup|what's up|who are you|help|thanks|thank you).*")) || lowerPrompt.split(" ").size <= 2)
 
@@ -44,11 +63,9 @@ class AgentManager(private val context: Context) {
                 <|im_start|>assistant
             """.trimIndent()
 
-            return@withContext if (useCliMode) {
-                bridge.generateWithCli(chatPrompt, "model.gguf", "", onToken)
-            } else {
-                bridge.generate(chatPrompt, onToken)
-            }
+            val response = inference.generateResponse(chatPrompt)
+            onToken(response)
+            return@withContext response
         }
 
         // --- Autonomous Multi-Step Tool Agent Loop ---
@@ -60,13 +77,6 @@ class AgentManager(private val context: Context) {
             val notificationContext = AgentNotificationListener.getContextSummary()
             val screenService = AgentAccessibilityService.instance
             val screenContext = screenService?.getScreenContentSummary() ?: "Accessibility Service offline."
-
-            val toolGrammar = """
-                root ::= tool-call
-                tool-call ::= "TOOL: " tool-name "\n" "ARG: " arg-value
-                tool-name ::= "open_browser" | "github_get_issues" | "get_screen_content" | "get_recent_notifications" | "open_app" | "click_text" | "type_text" | "get_installed_apps" | "finish"
-                arg-value ::= [^\n]*
-            """.trimIndent()
 
             val systemPrompt = """
                 <|im_start|>system
@@ -82,10 +92,10 @@ class AgentManager(private val context: Context) {
                 $executionHistory
                 
                 Rules:
-                - Output only a single TOOL and ARG pair per turn.
-                - To check messages or alerts, use TOOL: get_recent_notifications.
-                - To see UI elements on screen, use TOOL: get_screen_content.
-                - To view or launch installed applications, use TOOL: get_installed_apps or TOOL: open_app.
+                - Output only a single TOOL and ARG pair per turn using format:
+                  TOOL: tool_name
+                  ARG: argument_value
+                - Available tools: open_browser, github_get_issues, get_screen_content, get_recent_notifications, open_app, click_text, type_text, get_installed_apps, finish.
                 - When the overall task is completely fulfilled, use TOOL: finish with ARG: summary of results.
                 <|im_end|>
                 <|im_start|>user
@@ -95,22 +105,11 @@ class AgentManager(private val context: Context) {
                 TOOL:
             """.trimIndent()
 
-            val rawModelOutput = if (useCliMode) {
-                bridge.generateWithCli(systemPrompt, "model.gguf", toolGrammar, onToken)
-            } else {
-                bridge.generateWithGrammar(systemPrompt, toolGrammar, onToken)
-            }
+            val rawModelOutput = inference.generateResponse(systemPrompt)
 
-            // Sanitize raw CLI binary text output to isolate the actual tool command block
-            val cleanOutput = if (useCliMode) {
+            val cleanOutput = val@ run {
                 val toolIndex = rawModelOutput.indexOf("TOOL:")
-                if (toolIndex != -1) {
-                    rawModelOutput.substring(toolIndex)
-                } else {
-                    rawModelOutput
-                }
-            } else {
-                rawModelOutput
+                if (toolIndex != -1) rawModelOutput.substring(toolIndex) else rawModelOutput
             }
 
             val formattedOutput = if (cleanOutput.startsWith("TOOL:")) {
@@ -153,7 +152,8 @@ class AgentManager(private val context: Context) {
 
     fun shutdown() {
         if (isInitialized) {
-            bridge.releaseModel()
+            llmInference?.close()
+            llmInference = null
             isInitialized = false
         }
     }
