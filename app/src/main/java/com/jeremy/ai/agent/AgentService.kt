@@ -31,7 +31,6 @@ class AgentService : Service() {
         agentManager = AgentManager(applicationContext)
         createNotificationChannel()
 
-        // Acquire a partial wake lock to keep the CPU running background tasks
         val powerManager = getSystemService(POWER_SERVICE) as PowerManager
         wakeLock = powerManager.newWakeLock(
             PowerManager.PARTIAL_WAKE_LOCK,
@@ -43,10 +42,7 @@ class AgentService : Service() {
         isRunning = true
         Log.i(TAG, "Muse AI Node Gateway Service Started.")
 
-        // Initialize MediaPipe engine background instance
         initializeMediaPipeEngine()
-        
-        // Start background autonomous monitoring loop
         startAutonomousBackgroundLoop()
     }
 
@@ -58,14 +54,13 @@ class AgentService : Service() {
             .setOngoing(true)
             .build()
 
-        // Promote to Foreground Service immediately to avoid LMK termination
         startForeground(NOTIFICATION_ID, notification)
 
         val prompt = intent?.getStringExtra("EXTRA_PROMPT")
         if (!prompt.isNullOrBlank()) {
             serviceScope.launch {
                 val result = agentManager.promptAgent(prompt)
-                NotificationHelper.postMessage(
+                NotificationHelper.postError(
                     applicationContext,
                     "Agent Task Result",
                     result
@@ -81,7 +76,7 @@ class AgentService : Service() {
             try {
                 val success = agentManager.setupEngineFromStorage("model.bin")
                 if (success) {
-                    Log.i(TAG, "Background MediaPipe engine successfully initialized under AgentService.")
+                    Log.i(TAG, "Background MediaPipe engine initialized from storage.")
                 } else {
                     Log.e(TAG, "Failed to initialize MediaPipe engine in background.")
                 }
@@ -95,23 +90,19 @@ class AgentService : Service() {
         serviceScope.launch {
             while (isActive) {
                 try {
-                    // Proactive background monitor for incoming notifications
                     val notifications = AgentNotificationListener.getContextSummary()
                     if (notifications.isNotBlank() && notifications != "No active notifications.") {
-                        Log.i(TAG, "Proactive trigger detected from notifications. Ready for event dispatch.")
+                        Log.i(TAG, "Proactive trigger detected from notifications.")
                     }
                 } catch (e: Exception) {
                     Log.e(TAG, "Error in background loop: ${e.localizedMessage}")
                 }
-                // Poll interval for background triggers (every 30 seconds)
                 delay(30000) 
             }
         }
     }
 
-    override fun onBind(intent: Intent?): IBinder? {
-        return null
-    }
+    override fun onBind(intent: Intent?): IBinder? = null
 
     private fun createNotificationChannel() {
         if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
