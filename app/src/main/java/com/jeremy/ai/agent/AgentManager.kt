@@ -1,6 +1,8 @@
 package com.jeremy.ai.agent
 
 import android.content.Context
+import android.os.Environment
+import android.util.Log
 import com.google.mediapipe.tasks.genai.llminference.LlmInference
 import com.jeremy.ai.agent.services.AgentNotificationListener
 import kotlinx.coroutines.Dispatchers
@@ -14,23 +16,21 @@ class AgentManager(private val context: Context) {
     private val githubClient = GitHubToolClient()
     private val toolRouter = AgentToolRouter(context, githubClient)
 
-    suspend fun setupEngineFromStorage(modelPathOrName: String): Boolean = withContext(Dispatchers.IO) {
-        try {
-            val fileName = if (modelPathOrName.isBlank() || modelPathOrName == "model.gguf") {
-                "model.bin"
-            } else {
-                modelPathOrName
-            }
+    companion object {
+        private const val TAG = "AgentManager"
+    }
 
-            // 1. If an absolute path is provided, use it directly
+    suspend fun setupEngineFromStorage(modelPathOrName: String): Result<Boolean> = withContext(Dispatchers.IO) {
+        try {
+            val fileName = modelPathOrName.trim()
+
+            // 1. Resolve target file path cleanly using absolute paths
             val targetFile = if (fileName.startsWith("/")) {
                 File(fileName)
             } else {
-                // 2. Check /sdcard/Download/models/ first
-                val sdcardModelsFolder = File("/sdcard/Download/models", fileName)
-                // 3. Check /sdcard/Download/ fallback
-                val sdcardDownloadFolder = File("/sdcard/Download", fileName)
-                // 4. Internal app files storage fallback
+                val externalStorage = Environment.getExternalStorageDirectory()
+                val sdcardModelsFolder = File(externalStorage, "Download/models/$fileName")
+                val sdcardDownloadFolder = File(externalStorage, "Download/$fileName")
                 val internalFilesFolder = File(context.filesDir, fileName)
 
                 when {
@@ -40,18 +40,39 @@ class AgentManager(private val context: Context) {
                 }
             }
 
+            Log.i(TAG, "Targeting model file: ${targetFile.absolutePath} (Exists: ${targetFile.exists()})")
+
+            if (!targetFile.exists()) {
+                val errorMsg = "File does not exist at path: ${targetFile.absolutePath}"
+                Log.e(TAG, errorMsg)
+                isInitialized = false
+                return@withContext Result.failure(IllegalArgumentException(errorMsg))
+            }
+
+            if (!targetFile.canRead()) {
+                val errorMsg = "Permission denied: Cannot read file at ${targetFile.absolutePath}"
+                Log.e(TAG, errorMsg)
+                isInitialized = false
+                return@withContext Result.failure(SecurityException(errorMsg))
+            }
+
+            // 2. Configure LlmInference with explicit GPU delegate targeting
             val options = LlmInference.LlmInferenceOptions.builder()
                 .setModelPath(targetFile.absolutePath)
+                .setPreferredBackend(LlmInference.Backend.GPU)
                 .setMaxTokens(1024)
                 .build()
 
+            Log.i(TAG, "Initializing MediaPipe LlmInference engine...")
             llmInference = LlmInference.createFromOptions(context, options)
             isInitialized = true
-            true
+            Log.i(TAG, "MediaPipe LlmInference successfully initialized!")
+            
+            Result.success(true)
         } catch (e: Exception) {
-            e.printStackTrace()
+            Log.e(TAG, "MediaPipe initialization failure: ${e.localizedMessage}", e)
             isInitialized = false
-            false
+            Result.failure(e)
         }
     }
 
@@ -84,7 +105,7 @@ class AgentManager(private val context: Context) {
             return@withContext response
         }
 
-        // --- Autonomous Multi-Step Tool Agent Loop ---
+        // --- Autonomous Agent Execution Loop ---
         val maxSteps = 6
         val executionHistory = StringBuilder()
         val currentGoal = prompt
