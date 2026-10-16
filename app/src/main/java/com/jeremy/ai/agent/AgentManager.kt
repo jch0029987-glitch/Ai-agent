@@ -18,6 +18,15 @@ import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import java.io.File
 
+object AgentBridge {
+    var agentManager: AgentManager? = null
+
+    suspend fun processPrompt(prompt: String, onToken: (String) -> Unit): String {
+        val manager = agentManager ?: return "Error: AgentManager not initialized."
+        return manager.promptAgent(prompt, onToken)
+    }
+}
+
 class AgentManager(private val context: Context) {
     private var engine: Engine? = null
     private var isInitialized = false
@@ -27,6 +36,11 @@ class AgentManager(private val context: Context) {
 
     private val githubClient = GitHubToolClient()
     private val toolRouter = AgentToolRouter(context, githubClient)
+
+    init {
+        // Automatically bind to the Ktor backend bridge
+        AgentBridge.agentManager = this
+    }
 
     companion object {
         private const val TAG = "AgentManager"
@@ -145,7 +159,6 @@ class AgentManager(private val context: Context) {
 
             if (isCasualChat) {
                 val conversationConfig = ConversationConfig(
-                    // Correct: systemInstruction expects Contents.of(...) per LiteRT-LM specs
                     systemInstruction = Contents.of("You are a helpful, concise AI assistant running locally on a Pixel 9. Respond in 1-2 brief English sentences only.")
                 )
                 
@@ -191,7 +204,6 @@ class AgentManager(private val context: Context) {
                 """.trimIndent()
 
                 val conversationConfig = ConversationConfig(
-                    // Correct: systemInstruction expects Contents.of(...) per LiteRT-LM specs
                     systemInstruction = Contents.of(systemInstructionText)
                 )
 
@@ -212,8 +224,23 @@ class AgentManager(private val context: Context) {
                 val toolLine = lines.find { it.startsWith("TOOL:") } ?: "TOOL: unknown"
                 val argLine = lines.find { it.startsWith("ARG:") }
                 
-                val rawToolName = toolLine.removePrefix("TOOL:").trim().lowercase()
-                val argValue = argLine?.removePrefix("ARG:")?.trim() ?: ""
+                var rawToolName = toolLine.removePrefix("TOOL:").trim().lowercase()
+                var argValue = argLine?.removePrefix("ARG:")?.trim() ?: ""
+
+                // Robustly handle model outputting function call syntax on the TOOL line (e.g. open_app("apps"))
+                if (rawToolName.contains("(")) {
+                    val parenIndex = rawToolName.indexOf('(')
+                    val innerArgs = rawToolName.substring(parenIndex + 1, rawToolName.lastIndexOf(')')).trim()
+                        .removeSurrounding("\"").removeSurrounding("'")
+                    rawToolName = rawToolName.substring(0, parenIndex).trim()
+                    if (argValue.isBlank() && innerArgs.isNotBlank()) {
+                        argValue = innerArgs
+                    }
+                }
+                if (rawToolName.contains(":")) {
+                    val parts = rawToolName.split(":").map { it.trim() }.filter { it.isNotEmpty() }
+                    rawToolName = parts.last()
+                }
 
                 val toolName = when (rawToolName) {
                     "activate_network", "launch_browser", "open_url" -> "open_browser"
