@@ -16,7 +16,7 @@ class AgentManager(private val context: Context) {
 
     suspend fun setupEngineFromStorage(modelPathOrName: String): Boolean = withContext(Dispatchers.IO) {
         try {
-            val targetPath = if (modelPathOrName.isBlank() || modelPathOrName == "model.gguf") {
+            val targetPath = if (modelPathOrName.isBlank() || modelPathOrName == "model.gguf" || modelPathOrName == "model.bin") {
                 File(context.filesDir, "model.bin").absolutePath
             } else {
                 modelPathOrName
@@ -107,10 +107,8 @@ class AgentManager(private val context: Context) {
 
             val rawModelOutput = inference.generateResponse(systemPrompt)
 
-            val cleanOutput = val@ run {
-                val toolIndex = rawModelOutput.indexOf("TOOL:")
-                if (toolIndex != -1) rawModelOutput.substring(toolIndex) else rawModelOutput
-            }
+            val toolIndex = rawModelOutput.indexOf("TOOL:")
+            val cleanOutput = if (toolIndex != -1) rawModelOutput.substring(toolIndex) else rawModelOutput
 
             val formattedOutput = if (cleanOutput.startsWith("TOOL:")) {
                 cleanOutput
