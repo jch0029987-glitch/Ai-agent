@@ -87,11 +87,17 @@ class AgentViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    fun initializeModelFromDownloads(fileName: String = "") {
+    fun initializeModelFromDownloads(fileName: String = "Qwen2.5-Coder-1.5B-Instruct_int4.litertlm") {
         viewModelScope.launch {
             _uiState.value = AgentUiState.Loading("Connecting to local engine...")
-            val success = agentManager.setupEngineFromStorage("")
-            _uiState.value = if (success) AgentUiState.Ready else AgentUiState.Error("Could not connect to engine backend.")
+            val result = agentManager.setupEngineFromStorage(fileName)
+            
+            _uiState.value = if (result.isSuccess) {
+                AgentUiState.Ready
+            } else {
+                val exception = result.exceptionOrNull()
+                AgentUiState.Error(exception?.localizedMessage ?: "Could not connect to engine backend.")
+            }
         }
     }
 
