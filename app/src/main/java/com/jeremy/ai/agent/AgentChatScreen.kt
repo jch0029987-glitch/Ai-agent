@@ -17,7 +17,7 @@ fun AgentChatScreen(
     requestBatteryExemption: () -> Unit = {}
 ) {
     val uiState by viewModel.uiState.collectAsState()
-    var modelFileName by remember { mutableStateOf("model.gguf") }
+    var modelFileName by remember { mutableStateOf("model.bin") } // Updated default to MediaPipe bundle format
     var inputQuery by remember { mutableStateOf("") }
 
     val drawerState = rememberDrawerState(initialValue = DrawerValue.Closed)
@@ -69,7 +69,7 @@ fun AgentChatScreen(
         Scaffold(
             topBar = {
                 TopAppBar(
-                    title = { Text(currentSession.title) },
+                    title = { Text(currentSession?.title ?: "Chat") }, // Fixed nullable receiver
                     navigationIcon = {
                         IconButton(onClick = { coroutineScope.launch { drawerState.open() } }) {
                             Text("≡", style = MaterialTheme.typography.headlineMedium)
@@ -88,7 +88,7 @@ fun AgentChatScreen(
                 // Top Section: Model Loading & Status
                 Column(modifier = Modifier.fillMaxWidth()) {
                     Text(
-                        text = "Muse AI Agent (Vulkan)",
+                        text = "Muse AI Agent (MediaPipe)", // Updated for hardware acceleration engine
                         style = MaterialTheme.typography.titleLarge
                     )
                     Spacer(modifier = Modifier.height(8.dp))
@@ -100,7 +100,7 @@ fun AgentChatScreen(
                         TextField(
                             value = modelFileName,
                             onValueChange = { modelFileName = it },
-                            label = { Text("Model File Name") },
+                            label = { Text("Model File Path / Name") },
                             modifier = Modifier.weight(1f),
                             singleLine = true,
                             enabled = uiState !is AgentUiState.Loading && uiState !is AgentUiState.Generating
@@ -148,14 +148,15 @@ fun AgentChatScreen(
                         )
                         Divider(modifier = Modifier.padding(vertical = 4.dp))
 
-                        if (currentSession.messages.isEmpty()) {
+                        val messages = currentSession?.messages ?: emptyList()
+                        if (messages.isEmpty()) {
                             Text(
                                 text = "Thread initialized. Type a prompt or task below.",
                                 style = MaterialTheme.typography.bodyMedium,
                                 color = MaterialTheme.colorScheme.outline
                             )
                         } else {
-                            currentSession.messages.forEach { msg ->
+                            messages.forEach { msg ->
                                 Text(
                                     text = "${msg.sender}: ${msg.text}",
                                     style = MaterialTheme.typography.bodyMedium
