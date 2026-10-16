@@ -149,7 +149,8 @@ class AgentManager(private val context: Context) {
                 )
                 
                 localEngine.createConversation(conversationConfig).use { conversation ->
-                    val response = conversation.sendMessage(trimmedPrompt)
+                    // Correctly wrap user input with Message.of() to satisfy LiteRT-LM Message type signature
+                    val response = conversation.sendMessage(Message.of(trimmedPrompt))
                     val resultText = response.toString()
                     onToken(resultText)
                     return@withContext resultText
@@ -194,7 +195,8 @@ class AgentManager(private val context: Context) {
                 )
 
                 val rawModelOutput = localEngine.createConversation(conversationConfig).use { conversation ->
-                    conversation.sendMessage("Task: $currentGoal\nTOOL:")
+                    // Correctly wrap task prompt using Message.of()
+                    conversation.sendMessage(Message.of("Task: $currentGoal\nTOOL:"))
                 }.toString()
 
                 val toolIndex = rawModelOutput.indexOf("TOOL:")
