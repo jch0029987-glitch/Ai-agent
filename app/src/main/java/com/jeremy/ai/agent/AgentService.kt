@@ -1,139 +1,57 @@
 package com.jeremy.ai.agent
 
-import android.app.Notification
-import android.app.NotificationChannel
-import android.app.NotificationManager
 import android.app.Service
 import android.content.Intent
 import android.os.IBinder
-import android.os.PowerManager
 import android.util.Log
-import androidx.core.app.NotificationCompat
-import com.jeremy.ai.agent.services.AgentNotificationListener
-import kotlinx.coroutines.*
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.launch
 
 class AgentService : Service() {
     private val serviceJob = SupervisorJob()
     private val serviceScope = CoroutineScope(Dispatchers.IO + serviceJob)
     private lateinit var agentManager: AgentManager
-    private var wakeLock: PowerManager.WakeLock? = null
 
     companion object {
-        const val CHANNEL_ID = "AgentServiceChannel"
-        const val NOTIFICATION_ID = 1337
-        private const val TAG = "AgentGatewayService"
-        var isRunning = false
-            private set
+        private const val TAG = "AgentService"
+        const val EXTRA_MODEL_PATH = "extra_model_path"
     }
 
     override fun onCreate() {
         super.onCreate()
-        agentManager = AgentManager(applicationContext)
-        createNotificationChannel()
-
-        val powerManager = getSystemService(POWER_SERVICE) as PowerManager
-        wakeLock = powerManager.newWakeLock(
-            PowerManager.PARTIAL_WAKE_LOCK,
-            "LocalAIAgent::ServiceWakeLock"
-        ).apply {
-            acquire(24 * 60 * 60 * 1000L)
-        }
-
-        isRunning = true
-        Log.i(TAG, "Muse AI Node Gateway Service Started.")
-
-        initializeMediaPipeEngine()
-        startAutonomousBackgroundLoop()
+        agentManager = AgentManager(this)
+        Log.i(TAG, "AgentService created.")
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        val notification: Notification = NotificationCompat.Builder(this, CHANNEL_ID)
-            .setContentTitle("Local AI Agent Active")
-            .setContentText("Connected to native MediaPipe LLM engine.")
-            .setSmallIcon(android.R.drawable.ic_menu_compass)
-            .setOngoing(true)
-            .build()
+        val modelPath = intent?.getStringExtra(EXTRA_MODEL_PATH) ?: "Qwen2.5-Coder-1.5B-Instruct_int4.litertlm"
 
-        startForeground(NOTIFICATION_ID, notification)
-
-        val prompt = intent?.getStringExtra("EXTRA_PROMPT")
-        if (!prompt.isNullOrBlank()) {
-            serviceScope.launch {
-                val result = agentManager.promptAgent(prompt)
-                NotificationHelper.postError(
-                    applicationContext,
-                    "Agent Task Result",
-                    result
-                )
+        serviceScope.launch {
+            Log.i(TAG, "Initializing MediaPipe engine from background service with model: $modelPath")
+            val result = agentManager.setupEngineFromStorage(modelPath)
+            
+            if (result.isSuccess) {
+                Log.i(TAG, "MediaPipe engine initialized successfully in background service.")
+            } else {
+                val exception = result.exceptionOrNull()
+                Log.e(TAG, "Failed to initialize MediaPipe engine in service: ${exception?.localizedMessage}", exception)
             }
         }
 
         return START_STICKY
     }
 
-    private fun initializeMediaPipeEngine() {
-        serviceScope.launch(Dispatchers.IO) {
-            try {
-                val success = agentManager.setupEngineFromStorage("model.bin")
-                if (success) {
-                    Log.i(TAG, "Background MediaPipe engine initialized from storage.")
-                } else {
-                    Log.e(TAG, "Failed to initialize MediaPipe engine in background.")
-                }
-            } catch (e: Exception) {
-                Log.e(TAG, "Error initializing MediaPipe engine: ${e.localizedMessage}")
-            }
-        }
-    }
-
-    private fun startAutonomousBackgroundLoop() {
-        serviceScope.launch {
-            while (isActive) {
-                try {
-                    val notifications = AgentNotificationListener.getContextSummary()
-                    if (notifications.isNotBlank() && notifications != "No active notifications.") {
-                        Log.i(TAG, "Proactive trigger detected from notifications.")
-                    }
-                } catch (e: Exception) {
-                    Log.e(TAG, "Error in background loop: ${e.localizedMessage}")
-                }
-                delay(30000) 
-            }
-        }
-    }
-
-    override fun onBind(intent: Intent?): IBinder? = null
-
-    private fun createNotificationChannel() {
-        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
-            val channel = NotificationChannel(
-                CHANNEL_ID,
-                "Agent Service Channel",
-                NotificationManager.IMPORTANCE_LOW
-            ).apply {
-                description = "Prevents Android from killing the local AI agent gateway."
-            }
-            val manager = getSystemService(NotificationManager::class.java)
-            manager?.createNotificationChannel(channel)
-        }
+    override fun onBind(intent: Intent?): IBinder? {
+        return null
     }
 
     override fun onDestroy() {
         super.onDestroy()
-        isRunning = false
+        serviceScope.cancel()
         agentManager.shutdown()
-        serviceJob.cancel()
-
-        try {
-            wakeLock?.let {
-                if (it.isHeld) {
-                    it.release()
-                }
-            }
-        } catch (e: Exception) {
-            // Ignore release exceptions
-        }
-
-        Log.i(TAG, "Agent Gateway Service Destroyed.")
+        Log.i(TAG, "AgentService destroyed.")
     }
 }
