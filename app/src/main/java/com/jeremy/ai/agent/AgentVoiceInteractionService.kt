@@ -22,7 +22,7 @@ class AgentVoiceInteractionSession(private val context: Context) : VoiceInteract
         super.onShow(args, showFlags)
         hide() // Hide default empty session frame
         
-        val intent = Intent(context, MainActivity::class.java).app {
+        val intent = Intent(context, MainActivity::class.java).apply {
             addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
             putExtra("TRIGGERED_BY_ASSISTANT", true)
         }
