@@ -11,32 +11,39 @@ import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.launch
 import java.io.File
 
-
-
 @Composable
 fun ErrorLogViewerDialog(onDismiss: () -> Unit) {
+    val context = LocalContext.current
     var rawLogContent by remember { mutableStateOf("Loading logs...") }
     var searchQuery by remember { mutableStateOf("") }
     val listState = rememberLazyListState()
     val coroutineScope = rememberCoroutineScope()
 
-    // Load log file from Downloads on composition
+    // Load log file with internal storage priority and external storage fallback
     LaunchedEffect(Unit) {
-        val downloadsDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
-        val logFile = File(downloadsDir, "agent_error_log.txt")
-        rawLogContent = if (logFile.exists()) {
-            logFile.readText()
-        } else {
-            "No error log found at ${logFile.absolutePath}"
+        val internalFile = File(context.filesDir, "agent_error_log.txt")
+        val externalDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
+        val externalFile = File(externalDir, "agent_error_log.txt")
+
+        rawLogContent = when {
+            internalFile.exists() -> {
+                internalFile.readText()
+            }
+            externalFile.exists() -> {
+                externalFile.readText()
+            }
+            else -> {
+                "No error logs found.\nChecked internal: ${internalFile.absolutePath}\nChecked external: ${externalFile.absolutePath}"
+            }
         }
         
-        // Auto-scroll to bottom of log on initial load
-        if (rawLogContent.isNotBlank()) {
+        if (rawLogContent.isNotBlank() && !rawLogContent.startsWith("No error logs")) {
             val lineCount = rawLogContent.lines().size
             if (lineCount > 0) {
                 listState.scrollToItem(lineCount - 1)
@@ -44,7 +51,6 @@ fun ErrorLogViewerDialog(onDismiss: () -> Unit) {
         }
     }
 
-    // Filter log lines dynamically based on search query
     val filteredLines = remember(rawLogContent, searchQuery) {
         val lines = rawLogContent.lines()
         if (searchQuery.isBlank()) {
@@ -59,7 +65,6 @@ fun ErrorLogViewerDialog(onDismiss: () -> Unit) {
         title = { Text("Agent Error Logs") },
         text = {
             Column(modifier = Modifier.fillMaxWidth().height(420.dp)) {
-                // Search filter text box
                 OutlinedTextField(
                     value = searchQuery,
                     onValueChange = { searchQuery = it },
@@ -77,7 +82,6 @@ fun ErrorLogViewerDialog(onDismiss: () -> Unit) {
                     textStyle = MaterialTheme.typography.bodySmall
                 )
 
-                // Scrollable log view area
                 Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
                     LazyColumn(
                         state = listState,
@@ -96,7 +100,6 @@ fun ErrorLogViewerDialog(onDismiss: () -> Unit) {
             }
         },
         confirmButton = {
-            // Jump to bottom helper button
             TextButton(onClick = {
                 coroutineScope.launch {
                     if (filteredLines.isNotEmpty()) {
@@ -110,10 +113,14 @@ fun ErrorLogViewerDialog(onDismiss: () -> Unit) {
         dismissButton = {
             Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                 TextButton(onClick = {
-                    val downloadsDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
-                    val logFile = File(downloadsDir, "agent_error_log.txt")
-                    if (logFile.exists()) logFile.delete()
-                    rawLogContent = "Log cleared."
+                    // Clear both potential locations to be thorough
+                    val internalFile = File(context.filesDir, "agent_error_log.txt")
+                    if (internalFile.exists()) internalFile.delete()
+                    
+                    val externalFile = File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS), "agent_error_log.txt")
+                    if (externalFile.exists()) externalFile.delete()
+
+                    rawLogContent = "Logs cleared from all locations."
                     searchQuery = ""
                 }) {
                     Text("Clear")
