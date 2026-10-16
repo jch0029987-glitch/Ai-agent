@@ -8,7 +8,7 @@ junitVersion = "1.2.1"
 kotlin = "2.4.0"
 material = "1.12.0"
 room = "2.6.1"
-ksp = "2.4.0-1.0.22" # Matches Kotlin 2.4.0 KSP release
+ksp = "2.4.0-2.0.2"  # Exact matched KSP version string for Kotlin 2.4.0
 
 [libraries]
 androidx-appcompat = { group = "androidx.appcompat", name = "appcompat", version.ref = "appcompat" }
