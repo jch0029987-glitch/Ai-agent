@@ -7,17 +7,17 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
-import com.jeremy.ai.agent.AgentManager
+import com.jeremy.ai.agent.AgentUiState
+import com.jeremy.ai.agent.AgentViewModel
 import kotlinx.coroutines.launch
 
 @Composable
-fun AgentChatScreen(agentManager: AgentManager) {
-    val scope = rememberCoroutineScope()
+fun AgentChatScreen(viewModel: AgentViewModel) {
+    val uiState by viewModel.uiState.collectAsState()
+    val currentSession = viewModel.currentSession
+
     var modelPathInput by remember { mutableStateOf("Qwen2.5-Coder-1.5B-Instruct_int4.litertlm") }
-    var statusText by remember { mutableStateOf("Status: Ready to load model.") }
-    var isError by remember { mutableStateOf(false) }
     var promptInput by remember { mutableStateOf("") }
-    val messages = remember { mutableStateListOf<String>() }
 
     Column(modifier = Modifier.fillMaxSize().padding(16.dp)) {
         Text("Muse AI Agent (MediaPipe)", style = MaterialTheme.typography.headlineSmall)
@@ -28,25 +28,13 @@ fun AgentChatScreen(agentManager: AgentManager) {
             OutlinedTextField(
                 value = modelPathInput,
                 onValueChange = { modelPathInput = it },
-                label = { Text("Model File Path / Name") },
+                label = { Text("Model File Name / Path") },
                 modifier = Modifier.weight(1f)
             )
             Spacer(modifier = Modifier.width(8.dp))
             Button(
                 onClick = {
-                    scope.launch {
-                        statusText = "Status: Initializing engine..."
-                        isError = false
-                        val result = agentManager.setupEngineFromStorage(modelPathInput)
-                        
-                        if (result.isSuccess) {
-                            statusText = "Status: Engine initialized and ready!"
-                        } else {
-                            isError = true
-                            val exception = result.exceptionOrNull()
-                            statusText = "Status Error: ${exception?.javaClass?.simpleName ?: "Exception"}\n${exception?.localizedMessage ?: "Unknown initialization error."}"
-                        }
-                    }
+                    viewModel.initializeModelFromDownloads(modelPathInput)
                 }
             ) {
                 Text("Load")
@@ -55,27 +43,38 @@ fun AgentChatScreen(agentManager: AgentManager) {
 
         Spacer(modifier = Modifier.height(12.dp))
 
-        // Status / Error Banner
+        // UI State / Status Banner
+        val (bannerContainerColor, bannerContentColor, statusMessage) = when (uiState) {
+            is AgentUiState.Idle -> Triple(MaterialTheme.colorScheme.surfaceVariant, MaterialTheme.colorScheme.onSurfaceVariant, "Status: Ready to load model.")
+            is AgentUiState.Loading -> Triple(MaterialTheme.colorScheme.surfaceVariant, MaterialTheme.colorScheme.onSurfaceVariant, (uiState as AgentUiState.Loading).message)
+            is AgentUiState.Ready -> Triple(MaterialTheme.colorScheme.primaryContainer, MaterialTheme.colorScheme.onPrimaryContainer, "Status: Engine initialized and ready!")
+            is AgentUiState.Generating -> Triple(MaterialTheme.colorScheme.tertiaryContainer, MaterialTheme.colorScheme.onTertiaryContainer, "Status: Generating response...")
+            is AgentUiState.Success -> Triple(MaterialTheme.colorScheme.surfaceVariant, MaterialTheme.colorScheme.onSurfaceVariant, "Status: Response complete.")
+            is AgentUiState.Error -> Triple(MaterialTheme.colorScheme.errorContainer, MaterialTheme.colorScheme.onErrorContainer, "Status Error: ${(uiState as AgentUiState.Error).message}")
+        }
+
         Card(
             modifier = Modifier.fillMaxWidth(),
-            colors = CardDefaults.cardColors(
-                containerColor = if (isError) MaterialTheme.colorScheme.errorContainer else MaterialTheme.colorScheme.surfaceVariant
-            )
+            colors = CardDefaults.cardColors(containerColor = bannerContainerColor)
         ) {
             Text(
-                text = statusText,
+                text = statusMessage,
                 modifier = Modifier.padding(12.dp),
-                color = if (isError) MaterialTheme.colorScheme.onErrorContainer else MaterialTheme.colorScheme.onSurfaceVariant,
+                color = bannerContentColor,
                 style = MaterialTheme.typography.bodyMedium
             )
         }
 
         Spacer(modifier = Modifier.height(12.dp))
 
-        // Chat Message Thread
+        // Chat Message Thread from Current Session
         LazyColumn(modifier = Modifier.weight(1f)) {
-            items(messages) { msg ->
-                Text(text = msg, modifier = Modifier.padding(vertical = 4.dp))
+            items(currentSession?.messages ?: emptyList()) { msg ->
+                Text(
+                    text = "${msg.sender}: ${msg.text}",
+                    modifier = Modifier.padding(vertical = 4.dp),
+                    style = MaterialTheme.typography.bodyLarge
+                )
             }
         }
 
@@ -87,21 +86,19 @@ fun AgentChatScreen(agentManager: AgentManager) {
                 value = promptInput,
                 onValueChange = { promptInput = it },
                 label = { Text("Ask Muse...") },
-                modifier = Modifier.weight(1f)
+                modifier = Modifier.weight(1f),
+                enabled = uiState !is AgentUiState.Loading && uiState !is AgentUiState.Generating
             )
             Spacer(modifier = Modifier.width(8.dp))
             Button(
                 onClick = {
-                    val userMsg = promptInput
-                    if (userMsg.isNotBlank()) {
-                        messages.add("User: $userMsg")
+                    if (promptInput.isNotBlank()) {
+                        val userMsg = promptInput
                         promptInput = ""
-                        scope.launch {
-                            val response = agentManager.promptAgent(userMsg)
-                            messages.add("Agent: $response")
-                        }
+                        viewModel.generateResponseForCurrentSession(userMsg)
                     }
-                }
+                },
+                enabled = uiState !is AgentUiState.Loading && uiState !is AgentUiState.Generating
             ) {
                 Text("Send")
             }
