@@ -1,6 +1,7 @@
 package com.jeremy.ai.agent
 
 import android.app.Application
+import android.util.Log
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
@@ -14,6 +15,10 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
+import java.io.File
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 
 data class ChatMessageItem(val sender: String, val text: String)
 
@@ -24,6 +29,7 @@ data class ChatSession(
 )
 
 class AgentViewModel(application: Application) : AndroidViewModel(application) {
+    private val appContext: Context get() = getApplication()
     private val agentManager = AgentManager(application)
     private val chatDao = AppDatabase.getDatabase(application).chatDao()
 
@@ -63,26 +69,60 @@ class AgentViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    /**
+     * Dumps error logs and stack traces directly to internal app storage
+     * so they can be viewed securely in the ErrorLogViewerDialog.
+     */
+    fun dumpErrorToStorage(tag: String, throwable: Throwable) {
+        try {
+            val logFile = File(appContext.filesDir, "agent_error_log.txt")
+            val timestamp = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault()).format(Date())
+            
+            val errorContent = buildString {
+                appendLine("========================================")
+                appendLine("TIMESTAMP: $timestamp")
+                appendLine("TAG: $tag")
+                appendLine("ERROR: ${throwable.localizedMessage}")
+                appendLine("STACKTRACE:")
+                appendLine(throwable.stackTraceToString())
+                appendLine("========================================\n")
+            }
+            
+            logFile.appendText(errorContent)
+            Log.e(tag, "Logged error to internal storage: ${logFile.absolutePath}", throwable)
+        } catch (e: Exception) {
+            Log.e("AgentViewModel", "Failed to write internal error log", e)
+        }
+    }
+
     fun createNewSession(title: String = "Thread ${sessions.size + 1}") {
         viewModelScope.launch {
-            val newEntity = ChatSessionEntity(title = title)
-            chatDao.insertSession(newEntity)
-            selectSession(newEntity.id)
+            try {
+                val newEntity = ChatSessionEntity(title = title)
+                chatDao.insertSession(newEntity)
+                selectSession(newEntity.id)
+            } catch (e: Exception) {
+                dumpErrorToStorage("createNewSession", e)
+            }
         }
     }
 
     fun selectSession(sessionId: String) {
         currentSessionId = sessionId
         viewModelScope.launch {
-            chatDao.getMessagesForSession(sessionId).collectLatest { messageEntities ->
-                val mappedMessages = messageEntities.map { ChatMessageItem(it.sender, it.text) }
-                sessions = sessions.map { session ->
-                    if (session.id == sessionId) {
-                        session.copy(messages = mappedMessages)
-                    } else {
-                        session
+            try {
+                chatDao.getMessagesForSession(sessionId).collectLatest { messageEntities ->
+                    val mappedMessages = messageEntities.map { ChatMessageItem(it.sender, it.text) }
+                    sessions = sessions.map { session ->
+                        if (session.id == sessionId) {
+                            session.copy(messages = mappedMessages)
+                        } else {
+                            session
+                        }
                     }
                 }
+            } catch (e: Exception) {
+                dumpErrorToStorage("selectSession", e)
             }
         }
     }
@@ -90,13 +130,19 @@ class AgentViewModel(application: Application) : AndroidViewModel(application) {
     fun initializeModelFromDownloads(fileName: String = "Qwen2.5-Coder-1.5B-Instruct_int4.litertlm") {
         viewModelScope.launch {
             _uiState.value = AgentUiState.Loading("Connecting to local engine...")
-            val result = agentManager.setupEngineFromStorage(fileName)
-            
-            _uiState.value = if (result.isSuccess) {
-                AgentUiState.Ready
-            } else {
-                val exception = result.exceptionOrNull()
-                AgentUiState.Error(exception?.localizedMessage ?: "Could not connect to engine backend.")
+            try {
+                val result = agentManager.setupEngineFromStorage(fileName)
+                
+                _uiState.value = if (result.isSuccess) {
+                    AgentUiState.Ready
+                } else {
+                    val exception = result.exceptionOrNull() ?: Exception("Unknown initialization error")
+                    dumpErrorToStorage("initializeModelFromDownloads", exception)
+                    AgentUiState.Error(exception.localizedMessage ?: "Could not connect to engine backend.")
+                }
+            } catch (e: Throwable) {
+                dumpErrorToStorage("initializeModelFromDownloads_Crash", e)
+                _uiState.value = AgentUiState.Error(e.localizedMessage ?: "Critical engine initialization failure")
             }
         }
     }
@@ -105,19 +151,23 @@ class AgentViewModel(application: Application) : AndroidViewModel(application) {
         val sessionId = currentSessionId ?: return
 
         viewModelScope.launch {
-            // 1. Persist user message to Room DB
-            chatDao.insertMessage(ChatMessageEntity(sessionId = sessionId, sender = "User", text = prompt))
-
-            _uiState.value = AgentUiState.Generating
             try {
+                // 1. Persist user message to Room DB
+                chatDao.insertMessage(ChatMessageEntity(sessionId = sessionId, sender = "User", text = prompt))
+
+                _uiState.value = AgentUiState.Generating
+                
                 // 2. Execute agent loop
                 val result = agentManager.promptAgent(prompt) { token -> }
 
                 // 3. Persist agent response/result to Room DB
                 chatDao.insertMessage(ChatMessageEntity(sessionId = sessionId, sender = "Muse", text = result))
                 _uiState.value = AgentUiState.Success(result)
-            } catch (e: Exception) {
-                val errorMsg = e.localizedMessage ?: "Unknown error"
+            } catch (e: Throwable) {
+                // Catch native errors, JNI issues, or coroutine exceptions and write them securely
+                dumpErrorToStorage("generateResponseForCurrentSession", e)
+                
+                val errorMsg = e.localizedMessage ?: "Native execution error"
                 chatDao.insertMessage(ChatMessageEntity(sessionId = sessionId, sender = "System", text = "Error: $errorMsg"))
                 _uiState.value = AgentUiState.Error(errorMsg)
             }
@@ -126,7 +176,11 @@ class AgentViewModel(application: Application) : AndroidViewModel(application) {
 
     override fun onCleared() {
         super.onCleared()
-        agentManager.shutdown()
+        try {
+            agentManager.shutdown()
+        } catch (e: Exception) {
+            dumpErrorToStorage("onCleared_Shutdown", e)
+        }
     }
 }
 
