@@ -25,7 +25,6 @@ class AgentManager(private val context: Context) {
             val options = LlmInference.LlmInferenceOptions.builder()
                 .setModelPath(targetPath)
                 .setMaxTokens(1024)
-                .setTemperature(0.7f)
                 .build()
 
             llmInference = LlmInference.createFromOptions(context, options)
