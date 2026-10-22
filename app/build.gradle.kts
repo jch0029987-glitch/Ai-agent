@@ -17,12 +17,12 @@ val localProperties = Properties().apply {
 
 android {
     namespace = "com.jeremy.ai.agent"
-    compileSdk = 35
+    compileSdk = 37
 
     defaultConfig {
         applicationId = "com.jeremy.ai.agent"
-        minSdk = 24
-        targetSdk = 35
+        minSdk = 29
+        targetSdk = 37
         versionCode = 1
         versionName = "1.0"
 
