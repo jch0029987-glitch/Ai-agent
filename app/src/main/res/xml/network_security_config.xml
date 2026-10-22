@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="utf-8"?>
+<network-security-config>
+    <!-- Base configuration applies to all connections unless overridden -->
+    <base-config cleartextTrafficPermitted="false">
+        <trust-anchors>
+            <!-- Trust system CAs -->
+            <certificates src="system" />
+            <!-- Trust user-installed CAs (helpful for debugging tools and intercepting proxies) -->
+            <certificates src="user" />
+        </trust-anchors>
+    </base-config>
+
+    <!-- Domain-specific overrides for local development or custom APIs -->
+    <domain-config cleartextTrafficPermitted="true">
+        <!-- Allow cleartext for localhost / emulator bridge -->
+        <domain includeSubdomains="true">localhost</domain>
+        <domain includeSubdomains="true">10.0.2.2</domain>
+        <domain includeSubdomains="true">192.168.1.5</domain> <!-- Replace with your local dev IP if needed -->
+    </domain-config>
+</network-security-config>
+
