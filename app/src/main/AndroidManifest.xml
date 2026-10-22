@@ -7,6 +7,8 @@
     <!-- Network & Connectivity -->
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+        <!-- Android 17 Local Network Access Permission -->
+    <uses-permission android:name="android.permission.ACCESS_LOCAL_NETWORK" />
 
     <!-- Background Execution, Services & Power Management -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
