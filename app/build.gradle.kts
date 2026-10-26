@@ -61,11 +61,11 @@ android {
   }
 
   compileOptions {
-    sourceCompatibility = JavaVersion.VERSION_11
-    targetCompatibility = JavaVersion.VERSION_11
+    sourceCompatibility = JavaVersion.VERSION_17
+    targetCompatibility = JavaVersion.VERSION_17
   }
 
-  kotlinOptions { jvmTarget = "11" }
+  kotlinOptions { jvmTarget = "17" }
 
   packaging {
     jniLibs { useLegacyPackaging = true }
@@ -113,10 +113,9 @@ dependencies {
   implementation("io.ktor:ktor-server-core:3.0.0")
   implementation("io.ktor:ktor-server-netty:3.0.0")
   implementation("io.ktor:ktor-server-content-negotiation:3.0.0")
-  implementation(
-          "io.ktor:ktor-server-websockets:3.0.0"
-  ) // <-- Required for real-time Web/TV token streaming
-  implementation("io.ktor:ktor-server-cors:3.0.0") // <-- Recommended for cross-origin Web UI access
+  implementation("io.ktor:ktor-server-call-logging:3.0.0") // <-- Included for server logging
+  implementation("io.ktor:ktor-server-websockets:3.0.0") 
+  implementation("io.ktor:ktor-server-cors:3.0.0") 
 
   // Kotlinx Serialization
   implementation("io.ktor:ktor-serialization-kotlinx-json:3.0.0")
