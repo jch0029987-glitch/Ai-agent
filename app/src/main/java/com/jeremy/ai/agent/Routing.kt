@@ -87,7 +87,7 @@ fun Application.configureRouting() {
                             withContext(Dispatchers.Default) {
                                 AgentBridge.processPrompt(clientMsg.prompt) { token ->
                                     val chunk = ServerResponse(token = token, isFinished = false)
-                                    val jsonString = Json.encodeToString(ServerResponse.serializer(), chunk)
+                                    val jsonString = Json.encodeToString(chunk)
                                     // Send individual token chunks non-blocking
                                     kotlinx.coroutines.runBlocking {
                                         outgoing.send(Frame.Text(jsonString))
@@ -97,12 +97,12 @@ fun Application.configureRouting() {
 
                             // Send completion signal
                             val finalChunk = ServerResponse(token = "", isFinished = true)
-                            val finalJson = Json.encodeToString(ServerResponse.serializer(), finalChunk)
+                            val finalJson = Json.encodeToString(finalChunk)
                             outgoing.send(Frame.Text(finalJson))
 
                         } catch (e: Exception) {
                             val errorChunk = ServerResponse(token = "\nError executing prompt: ${e.localizedMessage}", isFinished = true)
-                            val errorJson = Json.encodeToString(ServerResponse.serializer(), errorChunk)
+                            val errorJson = Json.encodeToString(errorChunk)
                             outgoing.send(Frame.Text(errorJson))
                         }
                     }
