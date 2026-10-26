@@ -11,12 +11,16 @@ import androidx.lifecycle.viewModelScope
 import com.jeremy.ai.agent.data.AppDatabase
 import com.jeremy.ai.agent.data.ChatMessageEntity
 import com.jeremy.ai.agent.data.ChatSessionEntity
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.io.File
+import java.net.Socket
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -43,10 +47,17 @@ class AgentViewModel(application: Application) : AndroidViewModel(application) {
     var currentSessionId by mutableStateOf<String?>(null)
         private set
 
+    // Live state tracking whether the embedded Ktor server is active on port 8080
+    var isServerRunning by mutableStateOf(false)
+        private set
+
     val currentSession: ChatSession?
         get() = sessions.find { it.id == currentSessionId }
 
     init {
+        // Start background polling to monitor Ktor server health / port availability
+        startServerHealthPoll()
+
         // Collect session threads reactively from Room
         viewModelScope.launch {
             chatDao.getAllSessions().collectLatest { sessionEntities ->
@@ -67,6 +78,23 @@ class AgentViewModel(application: Application) : AndroidViewModel(application) {
                     }
                 }
             }
+        }
+    }
+
+    private fun startServerHealthPoll() {
+        viewModelScope.launch {
+            while (true) {
+                isServerRunning = checkLocalPort(8080)
+                delay(3000) // Poll every 3 seconds
+            }
+        }
+    }
+
+    private suspend fun checkLocalPort(port: Int): Boolean = withContext(Dispatchers.IO) {
+        try {
+            Socket("127.0.0.1", port).use { true }
+        } catch (e: Exception) {
+            false
         }
     }
 
