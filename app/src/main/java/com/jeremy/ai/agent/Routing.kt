@@ -56,15 +56,20 @@ fun Application.configureRouting() {
                     }
                 }
 
-                call.respond(mapOf(
-                    "status" to "success",
-                    "prompt" to request.prompt,
-                    "response" to fullResponse.toString()
-                ))
+                call.respond(
+                    mapOf(
+                        "status" to "success",
+                        "prompt" to request.prompt,
+                        "response" to fullResponse.toString()
+                    )
+                )
             } catch (e: Exception) {
                 call.respond(
                     HttpStatusCode.InternalServerError,
-                    mapOf("status" to "error", "message" to e.localizedMessage ?: "Unknown error")
+                    mapOf(
+                        "status" to "error",
+                        "message" to (e.localizedMessage ?: "Unknown error")
+                    )
                 )
             }
         }
@@ -88,7 +93,6 @@ fun Application.configureRouting() {
                                 AgentBridge.processPrompt(clientMsg.prompt) { token ->
                                     val chunk = ServerResponse(token = token, isFinished = false)
                                     val jsonString = Json.encodeToString(ServerResponse.serializer(), chunk)
-                                    // Send individual token chunks non-blocking
                                     kotlinx.coroutines.runBlocking {
                                         outgoing.send(Frame.Text(jsonString))
                                     }
