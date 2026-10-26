@@ -22,13 +22,14 @@ import androidx.core.content.ContextCompat
 import com.jeremy.ai.agent.ui.AgentChatScreen
 import com.jeremy.ai.backend.configureRouting
 import io.ktor.serialization.kotlinx.json.*
+import io.ktor.server.application.install
 import io.ktor.server.engine.EmbeddedServer
 import io.ktor.server.engine.embeddedServer
 import io.ktor.server.netty.Netty
 import io.ktor.server.plugins.contentnegotiation.*
 import io.ktor.server.websocket.*
 import kotlinx.serialization.json.Json
-import java.time.Duration
+import kotlin.time.Duration.Companion.seconds
 
 class MainActivity : ComponentActivity() {
     private var ktorServer: EmbeddedServer<*, *>? = null
@@ -84,8 +85,8 @@ class MainActivity : ComponentActivity() {
                 ktorServer = embeddedServer(Netty, port = 8080) {
                     // 1. Install WebSockets plugin to support real-time token streaming routes
                     install(WebSockets) {
-                        pingPeriod = Duration.ofSeconds(15)
-                        timeout = Duration.ofSeconds(15)
+                        pingPeriod = 15.seconds
+                        timeout = 15.seconds
                         maxFrameSize = Long.MAX_VALUE
                         masking = false
                     }
