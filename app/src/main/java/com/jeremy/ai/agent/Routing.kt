@@ -3,6 +3,7 @@ package com.jeremy.ai.backend
 import com.jeremy.ai.agent.AgentBridge
 import io.ktor.http.*
 import io.ktor.server.application.*
+import io.ktor.server.request.*
 import io.ktor.server.response.*
 import io.ktor.server.routing.*
 import io.ktor.server.websocket.*
@@ -30,11 +31,45 @@ fun Application.configureRouting() {
     val activeConnections = Collections.synchronizedSet(hashSetOf<WebSocketSession>())
 
     routing {
+        // 1. Root landing page to avoid 404 in the browser
+        get("/") {
+            call.respondText(
+                "Ai-agent Ktor Server is Online\nEndpoints:\n- GET /health\n- POST /api/agent/prompt\n- WS /ws/agent",
+                ContentType.Text.Plain
+            )
+        }
+
+        // 2. Health check endpoint
         get("/health") {
             call.respond(mapOf("status" to "healthy", "service" to "agent-backend-gateway"))
         }
 
-        // Unified WebSocket endpoint streaming real-time tokens to Web UI and TV app
+        // 3. REST prompt endpoint for Termux/CLI integration
+        post("/api/agent/prompt") {
+            try {
+                val request = call.receive<ClientMessage>()
+                val fullResponse = StringBuilder()
+
+                withContext(Dispatchers.Default) {
+                    AgentBridge.processPrompt(request.prompt) { token ->
+                        fullResponse.append(token)
+                    }
+                }
+
+                call.respond(mapOf(
+                    "status" to "success",
+                    "prompt" to request.prompt,
+                    "response" to fullResponse.toString()
+                ))
+            } catch (e: Exception) {
+                call.respond(
+                    HttpStatusCode.InternalServerError,
+                    mapOf("status" to "error", "message" to e.localizedMessage ?: "Unknown error")
+                )
+            }
+        }
+
+        // 4. Unified WebSocket endpoint streaming real-time tokens to Web UI and TV app
         webSocket("/ws/agent") {
             activeConnections.add(this)
             try {
