@@ -113,7 +113,7 @@ dependencies {
   implementation("io.ktor:ktor-server-core:3.0.0")
   implementation("io.ktor:ktor-server-netty:3.0.0")
   implementation("io.ktor:ktor-server-content-negotiation:3.0.0")
-  implementation("io.ktor:ktor-server-call-logging:3.0.0") // <-- Included for server logging
+  implementation("io.ktor:ktor-server-call-logging-jvm:3.0.0") // Explicit JVM artifact mapping for Ktor 3.0
   implementation("io.ktor:ktor-server-websockets:3.0.0") 
   implementation("io.ktor:ktor-server-cors:3.0.0") 
 
