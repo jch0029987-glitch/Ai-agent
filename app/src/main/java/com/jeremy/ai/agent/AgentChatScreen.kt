@@ -1,9 +1,12 @@
 package com.jeremy.ai.agent.ui
 
+import android.os.Environment
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Clear
 import androidx.compose.material.icons.filled.Search
@@ -12,18 +15,15 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.jeremy.ai.agent.AgentUiState
 import com.jeremy.ai.agent.AgentViewModel
 import kotlinx.coroutines.launch
 import java.io.File
-import android.os.Environment
-import androidx.compose.material.icons.filled.Warning
-import androidx.compose.material.icons.filled.Search
-import androidx.compose.material.icons.filled.Clear
-
 
 @Composable
 fun AgentChatScreen(
@@ -46,7 +46,12 @@ fun AgentChatScreen(
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically
         ) {
-            Text("AI Agent (MediaPipe)", style = MaterialTheme.typography.headlineSmall)
+            Column {
+                Text("AI Agent (MediaPipe)", style = MaterialTheme.typography.headlineSmall)
+                Spacer(modifier = Modifier.height(2.dp))
+                // Live Ktor Server Status Indicator Badge
+                ServerStatusBadge(isOnline = viewModel.isServerRunning)
+            }
             
             // Action controls row (Error Logs + Battery Opt)
             Row(
@@ -152,6 +157,28 @@ fun AgentChatScreen(
     // Error Log Viewer Dialog Overlay
     if (showLogDialog) {
         ErrorLogViewerDialog(onDismiss = { showLogDialog = false })
+    }
+}
+
+@Composable
+fun ServerStatusBadge(isOnline: Boolean) {
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(6.dp)
+    ) {
+        Box(
+            modifier = Modifier
+                .size(8.dp)
+                .background(
+                    color = if (isOnline) Color(0xFF4CAF50) else Color(0xFFF44336),
+                    shape = CircleShape
+                )
+        )
+        Text(
+            text = if (isOnline) "Server: Online (Port 8080)" else "Server: Offline",
+            fontSize = 11.sp,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
     }
 }
 
