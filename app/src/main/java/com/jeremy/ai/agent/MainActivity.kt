@@ -7,6 +7,7 @@ import android.net.Uri
 import android.os.Bundle
 import android.os.PowerManager
 import android.provider.Settings
+import android.util.Log
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -19,9 +20,14 @@ import androidx.compose.material3.Surface
 import androidx.compose.ui.Modifier
 import androidx.core.content.ContextCompat
 import com.jeremy.ai.agent.ui.AgentChatScreen
-
+import com.jeremy.ai.backend.configureRouting
+import io.ktor.server.engine.EmbeddedServer
+import io.ktor.server.engine.embeddedServer
+import io.ktor.server.netty.Netty
 
 class MainActivity : ComponentActivity() {
+    private var ktorServer: EmbeddedServer<*, *>? = null
+
     private val requiredPermissions = arrayOf(
         Manifest.permission.CAMERA,
         Manifest.permission.RECORD_AUDIO,
@@ -49,6 +55,7 @@ class MainActivity : ComponentActivity() {
         
         setupGlobalCrashHandler()
         checkAndRequestPermissions()
+        startEmbeddedServer()
 
         setContent {
             MaterialTheme {
@@ -63,6 +70,30 @@ class MainActivity : ComponentActivity() {
                     )
                 }
             }
+        }
+    }
+
+    private fun startEmbeddedServer() {
+        try {
+            if (ktorServer == null) {
+                ktorServer = embeddedServer(Netty, port = 8080) {
+                    configureRouting()
+                }.start(wait = false)
+                Log.i("MainActivity", "Ktor Netty server successfully started on port 8080")
+            }
+        } catch (e: Exception) {
+            Log.e("MainActivity", "Failed to start embedded Ktor server", e)
+            Toast.makeText(this, "Server start error: ${e.localizedMessage}", Toast.LENGTH_LONG).show()
+        }
+    }
+
+    override fun onDestroy() {
+        super.onDestroy()
+        try {
+            ktorServer?.stop(1000, 2000)
+            ktorServer = null
+        } catch (e: Exception) {
+            Log.e("MainActivity", "Error stopping Ktor server", e)
         }
     }
 
