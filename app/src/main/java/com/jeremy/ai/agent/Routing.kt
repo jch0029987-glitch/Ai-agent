@@ -335,19 +335,20 @@ fun Application.configureRouting() {
                             withContext(Dispatchers.Default) {
                                 AgentBridge.processPrompt(fullPrompt) { token ->
                                     responseAccumulator.append(token)
-                                    val chunk = ServerResponse(token = token, isFinished = false)
-                                    val jsonString = Json.encodeToString(ServerResponse.serializer(), chunk)
-                                    outgoing.send(Frame.Text(jsonString))
                                 }
                             }
 
                             val finalResponseText = responseAccumulator.toString().trim()
+                            
+                            // Send token response and completion status using proper suspending calls
+                            val chunk = ServerResponse(token = finalResponseText, isFinished = false)
+                            outgoing.send(Frame.Text(Json.encodeToString(ServerResponse.serializer(), chunk)))
+
                             ChatSessionManager.appendMessage(clientId, "User", clientMsg.prompt)
                             ChatSessionManager.appendMessage(clientId, "Assistant", finalResponseText)
 
                             val finalChunk = ServerResponse(token = "", isFinished = true)
-                            val finalJson = Json.encodeToString(ServerResponse.serializer(), finalChunk)
-                            outgoing.send(Frame.Text(finalJson))
+                            outgoing.send(Frame.Text(Json.encodeToString(ServerResponse.serializer(), finalChunk)))
 
                         } catch (e: Exception) {
                             val errorChunk = ServerResponse(token = "\nError executing prompt: ${e.localizedMessage}", isFinished = true)
