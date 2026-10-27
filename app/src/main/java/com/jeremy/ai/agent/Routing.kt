@@ -10,18 +10,81 @@ import io.ktor.server.websocket.*
 import io.ktor.websocket.*
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 import java.util.Collections
+import java.util.concurrent.ConcurrentHashMap
+
+// ==========================================
+// 1. OpenAI Spec Data Models
+// ==========================================
+
+@Serializable
+data class OpenAIMessage(
+    val role: String, // "system", "user", or "assistant"
+    val content: String
+)
+
+@Serializable
+data class OpenAIChatRequest(
+    val model: String? = "gemma-4-abliterated",
+    val messages: List<OpenAIMessage>,
+    val stream: Boolean? = false,
+    val temperature: Float? = 0.7f,
+    val user: String? = null
+)
+
+@Serializable
+data class OpenAIChoice(
+    val index: Int = 0,
+    val message: OpenAIMessage? = null,
+    val delta: OpenAIDelta? = null,
+    @SerialName("finish_reason") val finishReason: String? = null
+)
+
+@Serializable
+data class OpenAIDelta(
+    val role: String? = null,
+    val content: String? = null
+)
+
+@Serializable
+data class OpenAIChatResponse(
+    val id: String,
+    val `object`: String = "chat.completion",
+    val created: Long = System.currentTimeMillis() / 1000,
+    val model: String = "gemma-4-abliterated",
+    val choices: List<OpenAIChoice>
+)
+
+@Serializable
+data class OpenAIModelObject(
+    val id: String,
+    val `object`: String = "model",
+    val created: Long = System.currentTimeMillis() / 1000,
+    val owned_by: String = "local-pixel9"
+)
+
+@Serializable
+data class OpenAIModelListResponse(
+    val `object`: String = "list",
+    val data: List<OpenAIModelObject>
+)
+
+// ==========================================
+// 2. Legacy / Native Client Models
+// ==========================================
 
 @Serializable
 data class ClientMessage(
-    val clientId: String,
-    val deviceType: String, // "web", "tv", or "termux-cli"
-    val prompt: String,
+    val clientId: String = "default-client",
+    val deviceType: String? = "phone", // "web", "phone", or "termux-cli"
+    val prompt: String = "",
     val cwd: String? = null,
     val gitContext: String? = null,
-    val stdinContent: String? = null
+    val stdinContent: String? = null,
+    val resetSession: Boolean = false
 )
 
 @Serializable
@@ -30,85 +93,208 @@ data class ServerResponse(
     val isFinished: Boolean
 )
 
+// ==========================================
+// 3. Multi-Round Chat Session Manager
+// ==========================================
+
+object ChatSessionManager {
+    private val sessions = ConcurrentHashMap<String, MutableList<Pair<String, String>>>()
+
+    fun getHistory(clientId: String): MutableList<Pair<String, String>> {
+        return sessions.getOrPut(clientId) { mutableListOf() }
+    }
+
+    fun clearSession(clientId: String) {
+        sessions.remove(clientId)
+    }
+
+    fun appendMessage(clientId: String, role: String, content: String) {
+        getHistory(clientId).add(Pair(role, content))
+    }
+}
+
+// ==========================================
+// 4. Ktor Routing Configuration
+// ==========================================
+
 fun Application.configureRouting() {
     val activeConnections = Collections.synchronizedSet(hashSetOf<WebSocketSession>())
 
     routing {
-        // 1. Root landing page to avoid 404 in the browser
+        // --- Root Landing & Health Endpoints ---
         get("/") {
             call.respondText(
-                "Ai-agent Ktor Server is Online\nEndpoints:\n- GET /health\n- POST /api/agent/prompt\n- POST /api/agent/stream (SSE)\n- WS /ws/agent",
+                "Ai-agent Local OpenAI Server is Online\n" +
+                        "Endpoints:\n" +
+                        "- GET /health\n" +
+                        "- GET /v1/models\n" +
+                        "- POST /v1/chat/completions (OpenAI Compatible)\n" +
+                        "- POST /api/agent/stream (Termux SSE)\n" +
+                        "- WS /ws/agent",
                 ContentType.Text.Plain
             )
         }
 
-        // 2. Health check endpoint
         get("/health") {
             call.respond(mapOf("status" to "healthy", "service" to "agent-backend-gateway"))
         }
 
-        // 3. REST prompt endpoint for standard requests
-        post("/api/agent/prompt") {
-            try {
-                val request = call.receive<ClientMessage>()
-                val fullResponse = StringBuilder()
+        // --- OpenAI Standard API Endpoints ---
 
-                // Augment prompt with Termux context if available
-                val contextualizedPrompt = buildString {
-                    if (!request.cwd.isNullOrBlank()) append("Current Directory: ${request.cwd}\n")
-                    if (!request.gitContext.isNullOrBlank()) append("${request.gitContext}\n")
-                    if (!request.stdinContent.isNullOrBlank()) append("Piped Input:\n${request.stdinContent}\n")
-                    append("Prompt: ${request.prompt}")
-                }
-
-                withContext(Dispatchers.Default) {
-                    AgentBridge.processPrompt(contextualizedPrompt) { token ->
-                        fullResponse.append(token)
-                    }
-                }
-
-                call.respond(
-                    mapOf(
-                        "status" to "success",
-                        "prompt" to request.prompt,
-                        "response" to fullResponse.toString()
+        // GET /v1/models
+        get("/v1/models") {
+            call.respond(
+                OpenAIModelListResponse(
+                    data = listOf(
+                        OpenAIModelObject(id = "gemma-4-abliterated"),
+                        OpenAIModelObject(id = "gemma-4-e2b")
                     )
                 )
+            )
+        }
+
+        // POST /v1/chat/completions (Supports OpenClaw, Claude Code, & standard OpenAI Clients)
+        post("/v1/chat/completions") {
+            try {
+                val request = call.receive<OpenAIChatRequest>()
+                val reqId = "chatcmpl-${System.currentTimeMillis()}"
+
+                // Construct full context prompt from array of messages sent by OpenAI client
+                val fullPrompt = buildString {
+                    for (msg in request.messages) {
+                        val roleLabel = when (msg.role.lowercase()) {
+                            "system" -> "System"
+                            "assistant" -> "Assistant"
+                            else -> "User"
+                        }
+                        append("$roleLabel: ${msg.content}\n")
+                    }
+                    append("Assistant:")
+                }
+
+                val lastUserMessage = request.messages.lastOrNull { it.role.lowercase() == "user" }?.content ?: ""
+
+                // Handle Streaming Requests (SSE formatting)
+                if (request.stream == true) {
+                    call.respondTextWriter(contentType = ContentType.Text.EventStream) {
+                        val fullResponseAccumulator = StringBuilder()
+
+                        withContext(Dispatchers.Default) {
+                            AgentBridge.processPrompt(fullPrompt) { token ->
+                                fullResponseAccumulator.append(token)
+                                val chunk = OpenAIChatResponse(
+                                    id = reqId,
+                                    `object` = "chat.completion.chunk",
+                                    choices = listOf(
+                                        OpenAIChoice(
+                                            index = 0,
+                                            delta = OpenAIDelta(content = token),
+                                            finishReason = null
+                                        )
+                                    )
+                                )
+                                val jsonChunk = Json.encodeToString(OpenAIChatResponse.serializer(), chunk)
+                                write("data: $jsonChunk\n\n")
+                                flush()
+                            }
+                        }
+
+                        // Send finish chunk
+                        val doneChunk = OpenAIChatResponse(
+                            id = reqId,
+                            `object` = "chat.completion.chunk",
+                            choices = listOf(
+                                OpenAIChoice(
+                                    index = 0,
+                                    delta = OpenAIDelta(),
+                                    finishReason = "stop"
+                                )
+                            )
+                        )
+                        write("data: ${Json.encodeToString(OpenAIChatResponse.serializer(), doneChunk)}\n\n")
+                        write("data: [DONE]\n\n")
+                        flush()
+
+                        // Record session turn
+                        val clientId = request.user ?: "openai-client"
+                        ChatSessionManager.appendMessage(clientId, "User", lastUserMessage)
+                        ChatSessionManager.appendMessage(clientId, "Assistant", fullResponseAccumulator.toString().trim())
+                    }
+                } else {
+                    // Handle Non-Streaming Direct Requests
+                    val responseAccumulator = StringBuilder()
+
+                    withContext(Dispatchers.Default) {
+                        AgentBridge.processPrompt(fullPrompt) { token ->
+                            responseAccumulator.append(token)
+                        }
+                    }
+
+                    val finalResponseText = responseAccumulator.toString().trim()
+                    val clientId = request.user ?: "openai-client"
+                    ChatSessionManager.appendMessage(clientId, "User", lastUserMessage)
+                    ChatSessionManager.appendMessage(clientId, "Assistant", finalResponseText)
+
+                    call.respond(
+                        OpenAIChatResponse(
+                            id = reqId,
+                            choices = listOf(
+                                OpenAIChoice(
+                                    index = 0,
+                                    message = OpenAIMessage(role = "assistant", content = finalResponseText),
+                                    finishReason = "stop"
+                                )
+                            )
+                        )
+                    )
+                }
             } catch (e: Exception) {
                 call.respond(
                     HttpStatusCode.InternalServerError,
-                    mapOf(
-                        "status" to "error",
-                        "message" to (e.localizedMessage ?: "Unknown error")
-                    )
+                    mapOf("error" to mapOf("message" to (e.localizedMessage ?: "Unknown error"), "type" to "server_error"))
                 )
             }
         }
 
-        // 4. Server-Sent Events (SSE) streaming endpoint for the Termux CLI
+        // --- Termux CLI Dedicated SSE Endpoint ---
         post("/api/agent/stream") {
             try {
                 val request = call.receive<ClientMessage>()
+                val clientId = request.clientId.ifBlank { "termux-cli" }
 
-                val contextualizedPrompt = buildString {
+                if (request.resetSession) {
+                    ChatSessionManager.clearSession(clientId)
+                }
+
+                val history = ChatSessionManager.getHistory(clientId)
+
+                val fullPrompt = buildString {
+                    for ((role, text) in history) {
+                        append("$role: $text\n")
+                    }
                     if (!request.cwd.isNullOrBlank()) append("Current Directory: ${request.cwd}\n")
                     if (!request.gitContext.isNullOrBlank()) append("${request.gitContext}\n")
                     if (!request.stdinContent.isNullOrBlank()) append("Piped Input:\n${request.stdinContent}\n")
-                    append("Prompt: ${request.prompt}")
+                    append("User: ${request.prompt}\nAssistant:")
                 }
+
+                val responseAccumulator = StringBuilder()
 
                 call.respondTextWriter(contentType = ContentType.Text.EventStream) {
                     withContext(Dispatchers.Default) {
-                        AgentBridge.processPrompt(contextualizedPrompt) { token ->
-                            // Format as standard Server-Sent Event data block
+                        AgentBridge.processPrompt(fullPrompt) { token ->
+                            responseAccumulator.append(token)
                             write("data: $token\n\n")
                             flush()
                         }
                     }
-                    // Send termination signal chunk
                     write("data: [DONE]\n\n")
                     flush()
                 }
+
+                ChatSessionManager.appendMessage(clientId, "User", request.prompt)
+                ChatSessionManager.appendMessage(clientId, "Assistant", responseAccumulator.toString().trim())
+
             } catch (e: Exception) {
                 call.respond(
                     HttpStatusCode.InternalServerError,
@@ -117,7 +303,7 @@ fun Application.configureRouting() {
             }
         }
 
-        // 5. Unified WebSocket endpoint streaming real-time tokens to Web UI and TV app
+        // --- Native Phone App & Web WebSocket Endpoint ---
         webSocket("/ws/agent") {
             activeConnections.add(this)
             try {
@@ -127,19 +313,37 @@ fun Application.configureRouting() {
                         val clientMsg = try {
                             Json.decodeFromString(ClientMessage.serializer(), text)
                         } catch (e: Exception) {
-                            ClientMessage(clientId = "unknown", deviceType = "unknown", prompt = text)
+                            ClientMessage(clientId = "ws-client", prompt = text)
+                        }
+
+                        val clientId = clientMsg.clientId.ifBlank { "ws-client" }
+                        if (clientMsg.resetSession) {
+                            ChatSessionManager.clearSession(clientId)
                         }
 
                         try {
+                            val history = ChatSessionManager.getHistory(clientId)
+                            val fullPrompt = buildString {
+                                for ((role, t) in history) {
+                                    append("$role: $t\n")
+                                }
+                                append("User: ${clientMsg.prompt}\nAssistant:")
+                            }
+
+                            val responseAccumulator = StringBuilder()
+
                             withContext(Dispatchers.Default) {
-                                AgentBridge.processPrompt(clientMsg.prompt) { token ->
+                                AgentBridge.processPrompt(fullPrompt) { token ->
+                                    responseAccumulator.append(token)
                                     val chunk = ServerResponse(token = token, isFinished = false)
                                     val jsonString = Json.encodeToString(ServerResponse.serializer(), chunk)
-                                    kotlinx.coroutines.runBlocking {
-                                        outgoing.send(Frame.Text(jsonString))
-                                    }
+                                    outgoing.send(Frame.Text(jsonString))
                                 }
                             }
+
+                            val finalResponseText = responseAccumulator.toString().trim()
+                            ChatSessionManager.appendMessage(clientId, "User", clientMsg.prompt)
+                            ChatSessionManager.appendMessage(clientId, "Assistant", finalResponseText)
 
                             val finalChunk = ServerResponse(token = "", isFinished = true)
                             val finalJson = Json.encodeToString(ServerResponse.serializer(), finalChunk)
@@ -153,7 +357,7 @@ fun Application.configureRouting() {
                     }
                 }
             } catch (e: Exception) {
-                // Handle socket disconnects safely
+                // Safe handling of socket disconnects
             } finally {
                 activeConnections.remove(this)
             }
