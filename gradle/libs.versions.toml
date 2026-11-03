@@ -1,5 +1,5 @@
 [versions]
-agp = "8.11.0"
+agp = "9.1.1"
 appcompat = "1.7.0"
 coreKtx = "1.16.0"
 espressoCore = "3.6.1"
@@ -8,7 +8,7 @@ junitVersion = "1.2.1"
 kotlin = "2.4.21"
 material = "1.12.0"
 room = "2.8.4"
-ksp = "2.3.10" # Correct official KSP version mapping for Kotlin 2.4.21
+ksp = "2.4.21-2.3.10"
 
 [libraries]
 androidx-appcompat = { group = "androidx.appcompat", name = "appcompat", version.ref = "appcompat" }
@@ -24,6 +24,5 @@ litertlm-android = { group = "com.google.ai.edge.litertlm", name = "litertlm-and
 
 [plugins]
 android-application = { id = "com.android.application", version.ref = "agp" }
-kotlin-android = { id = "org.jetbrains.kotlin.android", version.ref = "kotlin" }
 kotlin-compose = { id = "org.jetbrains.kotlin.plugin.compose", version.ref = "kotlin" }
 ksp = { id = "com.google.devtools.ksp", version.ref = "ksp" }

@@ -13,6 +13,8 @@ import kotlinx.coroutines.withContext
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
+import java.io.File
+import android.os.Environment
 import java.util.Collections
 import java.util.concurrent.ConcurrentHashMap
 
@@ -94,7 +96,30 @@ data class ServerResponse(
 )
 
 // ==========================================
-// 3. Multi-Round Chat Session Manager
+// 3. Telegram Bot DTO Models
+// ==========================================
+
+@Serializable
+data class TelegramUpdate(
+    @SerialName("update_id") val updateId: Long,
+    val message: TelegramMessage? = null
+)
+
+@Serializable
+data class TelegramMessage(
+    @SerialName("message_id") val messageId: Long,
+    val chat: TelegramChat,
+    val text: String? = null
+)
+
+@Serializable
+data class TelegramChat(
+    val id: Long,
+    val type: String
+)
+
+// ==========================================
+// 4. Multi-Round Chat Session Manager
 // ==========================================
 
 object ChatSessionManager {
@@ -114,7 +139,37 @@ object ChatSessionManager {
 }
 
 // ==========================================
-// 4. Ktor Routing Configuration
+// 5. Utility: Scan Local Model Files
+// ==========================================
+
+fun getAvailableModels(): List<OpenAIModelObject> {
+    val modelList = mutableListOf<OpenAIModelObject>()
+    try {
+        val externalStorage = Environment.getExternalStorageDirectory()
+        val modelsDir = File(externalStorage, "Download/models")
+        val downloadDir = File(externalStorage, "Download")
+
+        listOf(modelsDir, downloadDir).forEach { dir ->
+            if (dir.exists() && dir.isDirectory) {
+                dir.listFiles { file ->
+                    file.isFile && (file.name.endsWith(".litertlm", ignoreCase = true) || file.name.endsWith(".task", ignoreCase = true))
+                }?.forEach { modelFile ->
+                    modelList.add(OpenAIModelObject(id = modelFile.name))
+                }
+            }
+        }
+    } catch (e: Exception) {
+        // Fallback default
+    }
+
+    if (modelList.isEmpty()) {
+        modelList.add(OpenAIModelObject(id = "gemma-4-abliterated"))
+    }
+    return modelList
+}
+
+// ==========================================
+// 6. Ktor Routing Configuration
 // ==========================================
 
 fun Application.configureRouting() {
@@ -130,6 +185,7 @@ fun Application.configureRouting() {
                         "- GET /v1/models\n" +
                         "- POST /v1/chat/completions (OpenAI Compatible)\n" +
                         "- POST /api/agent/stream (Termux SSE)\n" +
+                        "- POST /api/telegram/webhook (Telegram Bot)\n" +
                         "- WS /ws/agent",
                 ContentType.Text.Plain
             )
@@ -143,14 +199,7 @@ fun Application.configureRouting() {
 
         // GET /v1/models
         get("/v1/models") {
-            call.respond(
-                OpenAIModelListResponse(
-                    data = listOf(
-                        OpenAIModelObject(id = "gemma-4-abliterated"),
-                        OpenAIModelObject(id = "gemma-4-e2b")
-                    )
-                )
-            )
+            call.respond(OpenAIModelListResponse(data = getAvailableModels()))
         }
 
         // POST /v1/chat/completions (Supports OpenClaw, Claude Code, & standard OpenAI Clients)
@@ -158,8 +207,8 @@ fun Application.configureRouting() {
             try {
                 val request = call.receive<OpenAIChatRequest>()
                 val reqId = "chatcmpl-${System.currentTimeMillis()}"
+                val requestedModel = request.model?.ifBlank { "gemma-4-abliterated" } ?: "gemma-4-abliterated"
 
-                // Construct full context prompt from array of messages sent by OpenAI client
                 val fullPrompt = buildString {
                     for (msg in request.messages) {
                         val roleLabel = when (msg.role.lowercase()) {
@@ -184,6 +233,7 @@ fun Application.configureRouting() {
                                 fullResponseAccumulator.append(token)
                                 val chunk = OpenAIChatResponse(
                                     id = reqId,
+                                    model = requestedModel,
                                     `object` = "chat.completion.chunk",
                                     choices = listOf(
                                         OpenAIChoice(
@@ -202,6 +252,7 @@ fun Application.configureRouting() {
                         // Send finish chunk
                         val doneChunk = OpenAIChatResponse(
                             id = reqId,
+                            model = requestedModel,
                             `object` = "chat.completion.chunk",
                             choices = listOf(
                                 OpenAIChoice(
@@ -238,6 +289,7 @@ fun Application.configureRouting() {
                     call.respond(
                         OpenAIChatResponse(
                             id = reqId,
+                            model = requestedModel,
                             choices = listOf(
                                 OpenAIChoice(
                                     index = 0,
@@ -303,6 +355,51 @@ fun Application.configureRouting() {
             }
         }
 
+        // --- Telegram Bot Webhook Endpoint ---
+        post("/api/telegram/webhook") {
+            try {
+                val update = call.receive<TelegramUpdate>()
+                val message = update.message
+                val text = message?.text
+                val chatId = message?.chat?.id
+
+                if (chatId != null && !text.isNullOrBlank()) {
+                    val clientId = "telegram-$chatId"
+                    if (text.trim().equals("/reset", ignoreCase = true)) {
+                        ChatSessionManager.clearSession(clientId)
+                        call.respond(HttpStatusCode.OK)
+                        return@post
+                    }
+
+                    val history = ChatSessionManager.getHistory(clientId)
+                    val fullPrompt = buildString {
+                        for ((role, msg) in history) {
+                            append("$role: $msg\n")
+                        }
+                        append("User: $text\nAssistant:")
+                    }
+
+                    val responseAccumulator = StringBuilder()
+                    withContext(Dispatchers.Default) {
+                        AgentBridge.processPrompt(fullPrompt) { token ->
+                            responseAccumulator.append(token)
+                        }
+                    }
+
+                    val responseText = responseAccumulator.toString().trim()
+                    ChatSessionManager.appendMessage(clientId, "User", text)
+                    ChatSessionManager.appendMessage(clientId, "Assistant", responseText)
+                }
+
+                call.respond(HttpStatusCode.OK)
+            } catch (e: Exception) {
+                call.respond(
+                    HttpStatusCode.InternalServerError,
+                    mapOf("status" to "error", "message" to (e.localizedMessage ?: "Unknown error"))
+                )
+            }
+        }
+
         // --- Native Phone App & Web WebSocket Endpoint ---
         webSocket("/ws/agent") {
             activeConnections.add(this)
@@ -340,7 +437,6 @@ fun Application.configureRouting() {
 
                             val finalResponseText = responseAccumulator.toString().trim()
                             
-                            // Send token response and completion status using proper suspending calls
                             val chunk = ServerResponse(token = finalResponseText, isFinished = false)
                             outgoing.send(Frame.Text(Json.encodeToString(ServerResponse.serializer(), chunk)))
 

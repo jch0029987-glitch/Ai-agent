@@ -1,6 +1,6 @@
 plugins {
     alias(libs.plugins.android.application) apply false
-    alias(libs.plugins.kotlin.android) apply false
     alias(libs.plugins.kotlin.compose) apply false
-    alias(libs.plugins.ksp) apply false // <-- Make sure KSP is declared here with apply false
+    alias(libs.plugins.ksp) apply false
+    alias(libs.plugins.room) apply false // If using version catalog alias, or define explicitly below
 }

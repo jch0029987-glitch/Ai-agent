@@ -199,7 +199,18 @@ class AgentManager(private val context: Context) {
                     - Output only a single TOOL and ARG pair per turn using format:
                       TOOL: tool_name
                       ARG: argument_value
-                    - Available tools: open_browser, github_get_issues, get_screen_content, get_recent_notifications, open_app, click_text, type_text, get_installed_apps, finish.
+                    - Available tools: 
+                      * open_browser (ARG: url)
+                      * github_get_issues (ARG: owner/repo)
+                      * get_screen_content (ARG: none)
+                      * get_recent_notifications (ARG: none)
+                      * open_app (ARG: package_name)
+                      * click_text (ARG: button_or_label_text)
+                      * type_text (ARG: text_to_input)
+                      * tap_xy (ARG: x,y coordinates)
+                      * scroll_down / scroll_up (ARG: none)
+                      * go_home / go_back / open_recents / open_notifications (ARG: none)
+                      * finish (ARG: final summary)
                     - When the overall task is completely fulfilled, use TOOL: finish with ARG: summary of results.
                 """.trimIndent()
 
@@ -248,6 +259,10 @@ class AgentManager(private val context: Context) {
                     "tap_text", "press_text" -> "click_text"
                     "list_apps", "get_apps", "apps", "open_apps" -> "get_installed_apps"
                     "notifications", "get_notifications", "check_notifications" -> "get_recent_notifications"
+                    "screen", "screen_content", "read_screen" -> "get_screen_content"
+                    "home", "navigate_home" -> "go_home"
+                    "back", "navigate_back" -> "go_back"
+                    "recents", "overview" -> "open_recents"
                     else -> rawToolName
                 }
 
