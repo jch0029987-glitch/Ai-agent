@@ -2,7 +2,8 @@ package com.jeremy.ai.agent
 
 import android.content.Context
 import android.content.Intent
-import com.jeremy.ai.agent.services.AgentAccessibilityService
+import com.jeremy.ai.agent.AgentAccessibilityService
+
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.util.concurrent.CompletableFuture
