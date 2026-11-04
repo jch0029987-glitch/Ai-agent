@@ -1,6 +1,8 @@
 package com.jeremy.ai.agent
+
 import android.accessibilityservice.AccessibilityService
 import android.accessibilityservice.GestureDescription
+import android.content.Intent
 import android.graphics.Path
 import android.os.Bundle
 import android.util.Log
@@ -42,6 +44,8 @@ class AgentAccessibilityService : AccessibilityService() {
     // 2. Node Target Operations (Click/Type/Focus)
     // ==========================================
 
+    fun clickByText(text: String): Boolean = clickNodeByText(text)
+
     fun clickNodeByText(text: String): Boolean {
         val rootNode = rootInActiveWindow ?: return false
         val nodes = rootNode.findAccessibilityNodeInfosByText(text) ?: return false
@@ -50,7 +54,6 @@ class AgentAccessibilityService : AccessibilityService() {
             if (node.isClickable) {
                 return node.performAction(AccessibilityNodeInfo.ACTION_CLICK)
             }
-            // Traverse parent hierarchy if wrapper view consumes click
             var parent = node.parent
             while (parent != null) {
                 if (parent.isClickable) {
@@ -61,6 +64,8 @@ class AgentAccessibilityService : AccessibilityService() {
         }
         return false
     }
+
+    fun typeText(text: String): Boolean = typeTextInFocusedNode(text)
 
     fun typeTextInFocusedNode(text: String): Boolean {
         val rootNode = rootInActiveWindow ?: return false
@@ -86,62 +91,47 @@ class AgentAccessibilityService : AccessibilityService() {
     }
 
     // ==========================================
-    // 3. Coordinate Gesture Dispatcher (Tap/Swipe)
+    // 3. App Launch & Gestures
     // ==========================================
 
-    fun tapCoordinate(x: Float, y: Float, callback: ((Boolean) -> Unit)? = null) {
-        val path = Path().apply {
-            moveTo(x, y)
+    fun openApp(packageName: String): Boolean {
+        val intent = packageManager.getLaunchIntentForPackage(packageName) ?: return false
+        intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        return try {
+            startActivity(intent)
+            true
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to launch app: $packageName", e)
+            false
         }
+    }
+
+    fun tapCoordinate(x: Float, y: Float, callback: ((Boolean) -> Unit)? = null) {
+        val path = Path().apply { moveTo(x, y) }
         val stroke = GestureDescription.StrokeDescription(path, 0, 50)
         val gesture = GestureDescription.Builder().addStroke(stroke).build()
 
         dispatchGesture(gesture, object : GestureResultCallback() {
-            override fun onCompleted(gestureDescription: GestureDescription?) {
-                callback?.invoke(true)
-            }
-
-            override fun onCancelled(gestureDescription: GestureDescription?) {
-                callback?.invoke(false)
-            }
+            override fun onCompleted(gestureDescription: GestureDescription?) { callback?.invoke(true) }
+            override fun onCancelled(gestureDescription: GestureDescription?) { callback?.invoke(false) }
         }, null)
     }
 
-    fun swipeGesture(
-        startX: Float,
-        startY: Float,
-        endX: Float,
-        endY: Float,
-        durationMs: Long = 300,
-        callback: ((Boolean) -> Unit)? = null
-    ) {
-        val path = Path().apply {
-            moveTo(startX, startY)
-            lineTo(endX, endY)
-        }
+    fun swipeGesture(startX: Float, startY: Float, endX: Float, endY: Float, durationMs: Long = 300, callback: ((Boolean) -> Unit)? = null) {
+        val path = Path().apply { moveTo(startX, startY); lineTo(endX, endY) }
         val stroke = GestureDescription.StrokeDescription(path, 0, durationMs)
         val gesture = GestureDescription.Builder().addStroke(stroke).build()
 
         dispatchGesture(gesture, object : GestureResultCallback() {
-            override fun onCompleted(gestureDescription: GestureDescription?) {
-                callback?.invoke(true)
-            }
-
-            override fun onCancelled(gestureDescription: GestureDescription?) {
-                callback?.invoke(false)
-            }
+            override fun onCompleted(gestureDescription: GestureDescription?) { callback?.invoke(true) }
+            override fun onCancelled(gestureDescription: GestureDescription?) { callback?.invoke(false) }
         }, null)
     }
 
     fun scrollScreen(forward: Boolean = true): Boolean {
         val rootNode = rootInActiveWindow ?: return false
         val scrollableNode = findScrollableNode(rootNode) ?: return false
-
-        val action = if (forward) {
-            AccessibilityNodeInfo.ACTION_SCROLL_FORWARD
-        } else {
-            AccessibilityNodeInfo.ACTION_SCROLL_BACKWARD
-        }
+        val action = if (forward) AccessibilityNodeInfo.ACTION_SCROLL_FORWARD else AccessibilityNodeInfo.ACTION_SCROLL_BACKWARD
         return scrollableNode.performAction(action)
     }
 
@@ -172,12 +162,9 @@ class AgentAccessibilityService : AccessibilityService() {
 
         if (!text.isNullOrEmpty() || !contentDesc.isNullOrEmpty()) {
             val label = text ?: contentDesc
-            sb.append("  ".repeat(depth))
-                .append("• ")
-                .append(label)
+            sb.append("  ".repeat(depth)).append("• ").append(label)
                 .append(if (node.isClickable) " [Clickable]" else "")
-                .append(if (node.isEditable) " [Editable]" else "")
-                .append("\n")
+                .append(if (node.isEditable) " [Editable]" else "").append("\n")
         }
 
         for (i in 0 until node.childCount) {
