@@ -17,7 +17,8 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import java.io.File
-import com.jeremy.ai.BuildConfig
+// BuildConfig is generated in this same package (com.jeremy.ai.agent), so no explicit import is required here!
+
 object AgentBridge {
     var agentManager: AgentManager? = null
 
@@ -174,7 +175,7 @@ class AgentManager(private val context: Context) {
         telegramMessageId: Long
     ): String {
         val activeToken = if (telegramBotToken.isBlank() || telegramBotToken == "YOUR_TELEGRAM_BOT_TOKEN") {
-            com.jeremy.ai.BuildConfig.TELEGRAM_BOT_TOKEN
+            BuildConfig.TELEGRAM_BOT_TOKEN
         } else {
             telegramBotToken
         }

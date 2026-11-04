@@ -1,6 +1,7 @@
 package com.jeremy.ai.backend
 
 import com.jeremy.ai.agent.AgentBridge
+import com.jeremy.ai.agent.BuildConfig
 import io.ktor.http.*
 import io.ktor.server.application.*
 import io.ktor.server.request.*
@@ -18,7 +19,7 @@ import android.os.Environment
 import java.util.Collections
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.CompletableFuture
-import com.jeremy.ai.BuildConfig
+
 // ==========================================
 // 1. OpenAI Spec Data Models
 // ==========================================
@@ -226,8 +227,8 @@ private fun editTelegramMessage(botToken: String, chatId: Long, messageId: Long,
 
 fun Application.configureRouting() {
     val activeConnections = Collections.synchronizedSet(hashSetOf<WebSocketSession>())
-    // Pull Telegram Bot API Token directly from local.properties via BuildConfig
-    val telegramBotToken = com.jeremy.ai.BuildConfig.TELEGRAM_BOT_TOKEN
+    // Pull Telegram Bot API Token directly from local.properties via BuildConfig under namespace com.jeremy.ai.agent
+    val telegramBotToken = BuildConfig.TELEGRAM_BOT_TOKEN
 
     routing {
         // --- Root Landing & Health Endpoints ---
