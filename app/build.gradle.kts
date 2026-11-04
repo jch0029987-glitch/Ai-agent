@@ -28,6 +28,12 @@ android {
 
         val matrixToken = localProperties.getProperty("matrix.access.token") ?: ""
         buildConfigField("String", "MATRIX_ACCESS_TOKEN", "\"$matrixToken\"")
+
+        val telegramBotToken = localProperties.getProperty("TELEGRAM_BOT_TOKEN", "").trim().removeSurrounding("\"")
+        val telegramAllowedUserId = localProperties.getProperty("TELEGRAM_ALLOWED_USER_ID", "").trim().removeSurrounding("\"")
+
+        buildConfigField("String", "TELEGRAM_BOT_TOKEN", "\"$telegramBotToken\"")
+        buildConfigField("String", "TELEGRAM_ALLOWED_USER_ID", "\"$telegramAllowedUserId\"")
     }
 
     signingConfigs {
