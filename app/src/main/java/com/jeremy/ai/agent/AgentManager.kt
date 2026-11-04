@@ -21,11 +21,13 @@ import java.io.File
 object AgentBridge {
     var agentManager: AgentManager? = null
 
+    // Exact 2-parameter signature for AgentViewModel and MatrixAgentBridge
     suspend fun processPrompt(prompt: String, onToken: (String) -> Unit): String {
         val manager = agentManager ?: return "Error: AgentManager not initialized."
-        return manager.promptAgent(prompt, onToken = onToken)
+        return manager.promptAgent(prompt, onToken)
     }
 
+    // Dedicated signature for Telegram webhook routing without lambda/parameter collisions
     suspend fun processPromptWithTelegramUpdates(
         prompt: String,
         botToken: String,
@@ -33,12 +35,7 @@ object AgentBridge {
         messageId: Long
     ): String {
         val manager = agentManager ?: return "Error: AgentManager not initialized."
-        return manager.promptAgent(
-            prompt = prompt,
-            telegramBotToken = botToken,
-            telegramChatId = chatId,
-            telegramMessageId = messageId
-        )
+        return manager.promptAgentWithTelegram(prompt, botToken, chatId, messageId)
     }
 }
 
@@ -163,12 +160,26 @@ class AgentManager(private val context: Context) {
         }
     }
 
+    // Standard entry point used by AgentViewModel and MatrixAgentBridge
     suspend fun promptAgent(
         prompt: String,
-        onToken: (String) -> Unit = {},
-        telegramBotToken: String? = null,
-        telegramChatId: Long? = null,
-        telegramMessageId: Long? = null
+        onToken: (String) -> Unit = {}
+    ): String = executePromptInternal(prompt, onToken, null, null, null)
+
+    // Dedicated entry point for Telegram webhooks with live tickers
+    suspend fun promptAgentWithTelegram(
+        prompt: String,
+        telegramBotToken: String,
+        telegramChatId: Long,
+        telegramMessageId: Long
+    ): String = executePromptInternal(prompt, {}, telegramBotToken, telegramChatId, telegramMessageId)
+
+    private suspend fun executePromptInternal(
+        prompt: String,
+        onToken: (String) -> Unit,
+        telegramBotToken: String?,
+        telegramChatId: Long?,
+        telegramMessageId: Long?
     ): String = withContext(Dispatchers.Default) {
         inferenceMutex.withLock {
             val localEngine = engine

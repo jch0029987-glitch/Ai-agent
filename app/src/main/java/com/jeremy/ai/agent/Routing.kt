@@ -444,6 +444,7 @@ fun Application.configureRouting() {
                         return@post
                     }
 
+                    // 1. Send initial ticker message
                     val statusMessageId = sendTelegramMessage(telegramBotToken, chatId, "⚙️ *Agent Initializing...*\n`Processing prompt`")
 
                     val history = ChatSessionManager.getHistory(clientId)
@@ -454,15 +455,17 @@ fun Application.configureRouting() {
                         append("User: $text\nAssistant:")
                     }
 
-                    val responseAccumulator = StringBuilder()
-                    withContext(Dispatchers.Default) {
-                        AgentBridge.processPrompt(fullPrompt) { token ->
-                            responseAccumulator.append(token)
-                        }
+                    // 2. Execute agent prompt with live ticker updates & approval hooks
+                    val responseText = withContext(Dispatchers.Default) {
+                        AgentBridge.processPromptWithTelegramUpdates(
+                            prompt = fullPrompt,
+                            botToken = telegramBotToken,
+                            chatId = chatId,
+                            messageId = statusMessageId ?: 0L
+                        )
                     }
 
-                    val responseText = responseAccumulator.toString().trim()
-
+                    // 3. Edit message to final task completion state
                     if (statusMessageId != null) {
                         editTelegramMessage(telegramBotToken, chatId, statusMessageId, "✅ *Task Completed*\n\n$responseText")
                     }
