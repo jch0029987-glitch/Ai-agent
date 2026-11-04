@@ -32,6 +32,7 @@ import kotlinx.serialization.json.Json
 import kotlin.time.Duration.Companion.seconds
 
 class MainActivity : ComponentActivity() {
+
     private var ktorServer: EmbeddedServer<*, *>? = null
 
     private val requiredPermissions = arrayOf(
@@ -55,13 +56,14 @@ class MainActivity : ComponentActivity() {
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
-        // Enforce Android 16 mandatory edge-to-edge layout display
+        // Enforce Android mandatory edge-to-edge layout display
         enableEdgeToEdge()
         super.onCreate(savedInstanceState)
         
         setupGlobalCrashHandler()
         checkAndRequestPermissions()
         startEmbeddedServer()
+        startTelegramBridge()
 
         setContent {
             MaterialTheme {
@@ -76,6 +78,17 @@ class MainActivity : ComponentActivity() {
                     )
                 }
             }
+        }
+    }
+
+    private fun startTelegramBridge() {
+        try {
+            val intent = Intent(this, TelegramBridgeService::class.java)
+            startService(intent)
+            Log.i("MainActivity", "TelegramBridgeService successfully started.")
+        } catch (e: Exception) {
+            Log.e("MainActivity", "Failed to start TelegramBridgeService", e)
+            Toast.makeText(this, "Telegram Bridge failed: ${e.localizedMessage}", Toast.LENGTH_SHORT).show()
         }
     }
 
