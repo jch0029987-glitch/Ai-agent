@@ -2,9 +2,11 @@ package com.jeremy.ai.agent
 
 import android.content.Context
 import android.content.Intent
+import android.os.Environment
 import com.jeremy.ai.backend.TelegramApprovalStore
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import java.io.File
 import java.util.UUID
 import java.util.concurrent.CompletableFuture
 
@@ -40,10 +42,12 @@ class AgentToolRouter(
                 "home", "navigate_home" -> "go_home"
                 "back", "navigate_back" -> "go_back"
                 "recents", "overview" -> "open_recents"
+                "read_file", "cat" -> "read_file"
+                "write_patch", "patch_file", "write_file" -> "write_patch"
                 else -> rawToolName
             }
 
-            // 1. Human-in-the-Loop Guardrail: Intercept high-stakes or UI modification actions via Telegram
+            // 1. Human-in-the-Loop Guardrail: Intercept high-stakes or UI modification / file editing actions via Telegram
             if (isSensitiveTool(toolName)) {
                 val approved = requestUserApproval(toolName, argValue)
                 if (!approved) {
@@ -68,6 +72,35 @@ class AgentToolRouter(
                             githubClient.getOpenIssues(parts[0], parts[1])
                         } else {
                             "Error: Invalid repository format. Use 'owner/repo'."
+                        }
+                    }
+                }
+                "read_file" -> {
+                    if (argValue.isBlank()) {
+                        "Error: File path argument is missing."
+                    } else {
+                        val file = if (argValue.startsWith("/")) File(argValue) else File(Environment.getExternalStorageDirectory(), argValue)
+                        if (!file.exists()) {
+                            "Error: File does not exist at path: ${file.absolutePath}"
+                        } else {
+                            file.readText().take(3000) // Read safely up to 3000 chars
+                        }
+                    }
+                }
+                "write_patch" -> {
+                    if (argValue.isBlank() || !argValue.contains("|")) {
+                        "Error: Invalid format. Expected 'filepath | content'."
+                    } else {
+                        val parts = argValue.split("|", limit = 2)
+                        val path = parts[0].trim()
+                        val content = parts[1].trim()
+                        try {
+                            val file = if (path.startsWith("/")) File(path) else File(Environment.getExternalStorageDirectory(), path)
+                            file.parentFile?.mkdirs()
+                            file.writeText(content)
+                            "Successfully wrote/patched file at ${file.absolutePath}"
+                        } catch (e: Exception) {
+                            "Error writing patch: ${e.localizedMessage}"
                         }
                     }
                 }
@@ -174,7 +207,7 @@ class AgentToolRouter(
     }
 
     private fun isSensitiveTool(toolName: String): Boolean {
-        val sensitiveTools = listOf("open_app", "click_text", "type_text", "open_browser", "tap_xy")
+        val sensitiveTools = listOf("open_app", "click_text", "type_text", "open_browser", "tap_xy", "write_patch")
         return sensitiveTools.contains(toolName)
     }
 

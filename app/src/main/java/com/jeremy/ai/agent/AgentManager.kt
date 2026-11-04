@@ -57,7 +57,7 @@ class AgentManager(private val context: Context) {
     companion object {
         private const val TAG = "AgentManager"
         private val CASUAL_CHAT_REGEX = Regex("^(hi|hello|hey|sup|what's up|who are you|help|thanks|thank you).*")
-        private val ACTION_KEYWORDS = listOf("open", "launch", "click", "tap", "type", "get", "check", "list", "show", "press", "find", "task:")
+        private val ACTION_KEYWORDS = listOf("open", "launch", "click", "tap", "type", "get", "check", "list", "show", "press", "find", "read", "patch", "write", "task:")
     }
 
     private fun showToast(message: String) {
@@ -106,7 +106,6 @@ class AgentManager(private val context: Context) {
 
                 shutdownEngineInternal()
 
-                val nativeLibDir = context.applicationInfo.nativeLibraryDir
                 var activeBackendName = "GPU (Vulkan/OpenCL)"
 
                 // Performance-optimized backend configuration: Prefer GPU delegate for maximum mobile throughput on Tensor G4, fallback to CPU
@@ -258,7 +257,7 @@ class AgentManager(private val context: Context) {
                     - Output format:
                       TOOL: tool_name
                       ARG: argument_value
-                    - Tools: open_browser, github_get_issues, get_screen_content, get_recent_notifications, open_app, get_installed_apps, open_app_picker, click_text, type_text, tap_xy, scroll_down, scroll_up, go_home, go_back, open_recents, open_notifications, finish
+                    - Tools: open_browser, github_get_issues, read_file, write_patch, get_screen_content, get_recent_notifications, open_app, get_installed_apps, open_app_picker, click_text, type_text, tap_xy, scroll_down, scroll_up, go_home, go_back, open_recents, open_notifications, finish
                     - Use TOOL: finish with ARG: summary when done. Do not repeat identical tool calls.
                 """.trimIndent()
 
@@ -305,6 +304,8 @@ class AgentManager(private val context: Context) {
                     "home", "navigate_home" -> "go_home"
                     "back", "navigate_back" -> "go_back"
                     "recents", "overview" -> "open_recents"
+                    "cat", "view_file" -> "read_file"
+                    "patch", "write_file", "save_file" -> "write_patch"
                     else -> rawToolName
                 }
 

@@ -10,6 +10,9 @@ import io.ktor.server.routing.*
 import io.ktor.server.websocket.*
 import io.ktor.websocket.*
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.GlobalScope
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
@@ -129,7 +132,7 @@ data class TelegramCallbackQuery(
 )
 
 // ==========================================
-// 4. Approval & Session Stores
+// 4. Approval, Session & Cron Stores
 // ==========================================
 
 object TelegramApprovalStore {
@@ -152,8 +155,86 @@ object ChatSessionManager {
     }
 }
 
+object ShellSessionManager {
+    private val workingDirectories = ConcurrentHashMap<Long, File>()
+
+    fun executeCommand(chatId: Long, command: String): String {
+        val currentDir = workingDirectories.getOrPut(chatId) { Environment.getExternalStorageDirectory() }
+        
+        if (command.trim().startsWith("cd ")) {
+            val targetDir = command.trim().removePrefix("cd").trim()
+            val newDir = if (targetDir.startsWith("/")) File(targetDir) else File(currentDir, targetDir)
+            return if (newDir.exists() && newDir.isDirectory) {
+                workingDirectories[chatId] = newDir.canonicalFile
+                "Directory changed to: ${newDir.canonicalPath}"
+            } else {
+                "Error: Directory not found: $targetDir"
+            }
+        }
+
+        return try {
+            val process = ProcessBuilder("sh", "-c", command)
+                .directory(currentDir)
+                .redirectErrorStream(true)
+                .start()
+            
+            val output = process.inputStream.bufferedReader().use { it.readText() }
+            process.waitFor()
+            if (output.isBlank()) "Command executed successfully with no output." else output.take(3000)
+        } catch (e: Exception) {
+            "Shell execution error: ${e.localizedMessage}"
+        }
+    }
+}
+
+@Serializable
+data class ScheduledTask(
+    val taskId: String,
+    val chatId: Long,
+    val prompt: String,
+    val executeAtTimestamp: Long
+)
+
+object CronJobManager {
+    private val scheduledTasks = Collections.synchronizedList(mutableListOf<ScheduledTask>())
+
+    fun addTask(task: ScheduledTask) {
+        scheduledTasks.add(task)
+    }
+
+    fun startDispatcher(botToken: String) {
+        GlobalScope.launch(Dispatchers.IO) {
+            while (true) {
+                val now = System.currentTimeMillis()
+                val iterator = scheduledTasks.iterator()
+                while (iterator.hasNext()) {
+                    val task = iterator.next()
+                    if (now >= task.executeAtTimestamp) {
+                        try {
+                            val statusMsgId = sendTelegramMessage(botToken, task.chatId, "⏰ *Cron Reminder Triggered:*\n`${task.prompt}`")
+                            val response = AgentBridge.processPromptWithTelegramUpdates(
+                                prompt = task.prompt,
+                                botToken = botToken,
+                                chatId = task.chatId,
+                                messageId = statusMsgId ?: 0L
+                            )
+                            if (statusMsgId != null) {
+                                editTelegramMessage(botToken, task.chatId, statusMsgId, "✅ *Cron Task Completed*\n\n$response")
+                            }
+                        } catch (e: Exception) {
+                            // Safe error handling for cron tasks
+                        }
+                        iterator.remove()
+                    }
+                }
+                delay(10000L) // Check every 10 seconds
+            }
+        }
+    }
+}
+
 // ==========================================
-// 5. Utility: Scan Local Model Files & Telegram API Helpers
+// 5. Utility: Scan Local Model Files & Robust Telegram API Helpers
 // ==========================================
 
 fun getAvailableModels(): List<OpenAIModelObject> {
@@ -182,8 +263,31 @@ fun getAvailableModels(): List<OpenAIModelObject> {
     return modelList
 }
 
+private fun executeTelegramRequest(block: () -> String?): String? {
+    var maxRetries = 3
+    var delayMs = 1000L
+    while (maxRetries > 0) {
+        try {
+            return block()
+        } catch (e: java.net.HttpURLConnection) {
+            if (e.responseCode == 429) {
+                try { Thread.sleep(delayMs) } catch (_: Exception) {}
+                delayMs *= 2
+                maxRetries--
+            } else {
+                break
+            }
+        } catch (e: Exception) {
+            maxRetries--
+            if (maxRetries == 0) break
+            try { Thread.sleep(1000L) } catch (_: Exception) {}
+        }
+    }
+    return null
+}
+
 private fun sendTelegramMessage(botToken: String, chatId: Long, text: String): Long? {
-    return try {
+    return executeTelegramRequest {
         val url = java.net.URL("https://api.telegram.org/bot$botToken/sendMessage")
         val conn = url.openConnection() as java.net.HttpURLConnection
         conn.requestMethod = "POST"
@@ -199,13 +303,11 @@ private fun sendTelegramMessage(botToken: String, chatId: Long, text: String): L
             val regex = "\"message_id\":(\\d+)".toRegex()
             regex.find(responseStr)?.groupValues?.get(1)?.toLongOrNull()
         } else null
-    } catch (e: Exception) {
-        null
     }
 }
 
 private fun editTelegramMessage(botToken: String, chatId: Long, messageId: Long, newText: String) {
-    try {
+    executeTelegramRequest {
         val url = java.net.URL("https://api.telegram.org/bot$botToken/editMessageText")
         val conn = url.openConnection() as java.net.HttpURLConnection
         conn.requestMethod = "POST"
@@ -216,9 +318,52 @@ private fun editTelegramMessage(botToken: String, chatId: Long, messageId: Long,
         val payload = "{\"chat_id\": $chatId, \"message_id\": $messageId, \"text\": \"$escapedText\", \"parse_mode\": \"Markdown\"}"
         conn.outputStream.write(payload.toByteArray())
         conn.responseCode
-    } catch (e: Exception) {
-        // Handle gracefully
+        "ok"
     }
+}
+
+private fun answerCallbackQuery(botToken: String, callbackQueryId: String) {
+    executeTelegramRequest {
+        val url = java.net.URL("https://api.telegram.org/bot$botToken/answerCallbackQuery")
+        val conn = url.openConnection() as java.net.HttpURLConnection
+        conn.requestMethod = "POST"
+        conn.setRequestProperty("Content-Type", "application/json")
+        conn.doOutput = true
+        val payload = "{\"callback_query_id\": \"$callbackQueryId\"}"
+        conn.outputStream.write(payload.toByteArray())
+        conn.responseCode
+        "ok"
+    }
+}
+
+private fun sendTelegramDocument(botToken: String, chatId: Long, file: File, caption: String): Boolean {
+    return executeTelegramRequest {
+        val boundary = "Boundary-" + System.currentTimeMillis()
+        val url = java.net.URL("https://api.telegram.org/bot$botToken/sendDocument")
+        val conn = url.openConnection() as java.net.HttpURLConnection
+        conn.requestMethod = "POST"
+        conn.setRequestProperty("Content-Type", "multipart/form-data; boundary=$boundary")
+        conn.doOutput = true
+
+        conn.outputStream.use { outputStream ->
+            outputStream.write("--$boundary\r\n".toByteArray())
+            outputStream.write("Content-Disposition: form-data; name=\"chat_id\"\r\n\r\n".toByteArray())
+            outputStream.write("$chatId\r\n".toByteArray())
+
+            outputStream.write("--$boundary\r\n".toByteArray())
+            outputStream.write("Content-Disposition: form-data; name=\"caption\"\r\n\r\n".toByteArray())
+            outputStream.write("$caption\r\n".toByteArray())
+
+            outputStream.write("--$boundary\r\n".toByteArray())
+            outputStream.write("Content-Disposition: form-data; name=\"document\"; filename=\"${file.name}\"\r\n".toByteArray())
+            outputStream.write("Content-Type: application/octet-stream\r\n\r\n".toByteArray())
+            file.inputStream().use { it.copyTo(outputStream) }
+            outputStream.write("\r\n".toByteArray())
+
+            outputStream.write("--$boundary--\r\n".toByteArray())
+        }
+        if (conn.responseCode == 200) "ok" else null
+    } != null
 }
 
 // ==========================================
@@ -227,8 +372,14 @@ private fun editTelegramMessage(botToken: String, chatId: Long, messageId: Long,
 
 fun Application.configureRouting() {
     val activeConnections = Collections.synchronizedSet(hashSetOf<WebSocketSession>())
-    // Pull Telegram Bot API Token directly from local.properties via BuildConfig under namespace com.jeremy.ai.agent
     val telegramBotToken = BuildConfig.TELEGRAM_BOT_TOKEN
+
+    // Start background cronjob dispatcher daemon
+    try {
+        CronJobManager.startDispatcher(telegramBotToken)
+    } catch (e: Exception) {
+        // Safe startup guard
+    }
 
     routing {
         // --- Root Landing & Health Endpoints ---
@@ -410,6 +561,8 @@ fun Application.configureRouting() {
                 // Handle Inline Button Callback Queries (Approvals)
                 val callbackQuery = update.callbackQuery
                 if (callbackQuery != null) {
+                    answerCallbackQuery(telegramBotToken, callbackQuery.id)
+
                     val data = callbackQuery.data ?: ""
                     val msg = callbackQuery.message
                     val chatId = msg?.chat?.id
@@ -441,6 +594,50 @@ fun Application.configureRouting() {
                     val clientId = "telegram-$chatId"
                     if (text.trim().equals("/reset", ignoreCase = true)) {
                         ChatSessionManager.clearSession(clientId)
+                        sendTelegramMessage(telegramBotToken, chatId, "🔄 Session history cleared.")
+                        call.respond(HttpStatusCode.OK)
+                        return@post
+                    }
+
+                    // Handle Interactive Shell Command (/shell ...)
+                    if (text.startsWith("/shell ")) {
+                        val cmd = text.removePrefix("/shell").trim()
+                        val statusId = sendTelegramMessage(telegramBotToken, chatId, "💻 *Executing Shell:*\n`$cmd`")
+                        val result = ShellSessionManager.executeCommand(chatId, cmd)
+                        if (statusId != null) {
+                            editTelegramMessage(telegramBotToken, chatId, statusId, "💻 *Shell Output:*\n```bash\n$result\n```")
+                        }
+                        call.respond(HttpStatusCode.OK)
+                        return@post
+                    }
+
+                    // Handle Cron Reminder Command (/remind 5m Task...)
+                    if (text.startsWith("/remind ")) {
+                        val parts = text.removePrefix("/remind").trim().split(" ", limit = 2)
+                        if (parts.size == 2) {
+                            val timeStr = parts[0]
+                            val prompt = parts[1]
+                            val multiplier = when {
+                                timeStr.endsWith("s") -> 1000L
+                                timeStr.endsWith("m") -> 60 * 1000L
+                                timeStr.endsWith("h") -> 60 * 60 * 1000L
+                                else -> 60 * 1000L
+                            }
+                            val value = timeStr.dropLast(1).toLongOrNull() ?: 1L
+                            val triggerTime = System.currentTimeMillis() + (value * multiplier)
+
+                            CronJobManager.addTask(
+                                ScheduledTask(
+                                    taskId = "cron-${System.currentTimeMillis()}",
+                                    chatId = chatId,
+                                    prompt = prompt,
+                                    executeAtTimestamp = triggerTime
+                                )
+                            )
+                            sendTelegramMessage(telegramBotToken, chatId, "⏱️ Reminder scheduled for $timeStr from now: *$prompt*")
+                        } else {
+                            sendTelegramMessage(telegramBotToken, chatId, "Usage: `/remind <10s|5m|2h> <task prompt>`")
+                        }
                         call.respond(HttpStatusCode.OK)
                         return@post
                     }
