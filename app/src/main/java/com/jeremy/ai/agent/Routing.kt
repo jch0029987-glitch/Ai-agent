@@ -263,24 +263,17 @@ fun getAvailableModels(): List<OpenAIModelObject> {
     return modelList
 }
 
-private fun executeTelegramRequest(block: () -> String?): String? {
+private fun <T> executeTelegramRequest(block: () -> T?): T? {
     var maxRetries = 3
     var delayMs = 1000L
     while (maxRetries > 0) {
         try {
             return block()
-        } catch (e: java.net.HttpURLConnection) {
-            if (e.responseCode == 429) {
-                try { Thread.sleep(delayMs) } catch (_: Exception) {}
-                delayMs *= 2
-                maxRetries--
-            } else {
-                break
-            }
         } catch (e: Exception) {
             maxRetries--
             if (maxRetries == 0) break
-            try { Thread.sleep(1000L) } catch (_: Exception) {}
+            try { Thread.sleep(delayMs) } catch (_: Exception) {}
+            delayMs *= 2
         }
     }
     return null
@@ -302,12 +295,16 @@ private fun sendTelegramMessage(botToken: String, chatId: Long, text: String): L
             val responseStr = conn.inputStream.bufferedReader().use { it.readText() }
             val regex = "\"message_id\":(\\d+)".toRegex()
             regex.find(responseStr)?.groupValues?.get(1)?.toLongOrNull()
-        } else null
+        } else if (conn.responseCode == 429) {
+            throw java.io.IOException("Rate limited (429)")
+        } else {
+            null
+        }
     }
 }
 
-private fun editTelegramMessage(botToken: String, chatId: Long, messageId: Long, newText: String) {
-    executeTelegramRequest {
+private fun editTelegramMessage(botToken: String, chatId: Long, messageId: Long, newText: String): Int? {
+    return executeTelegramRequest {
         val url = java.net.URL("https://api.telegram.org/bot$botToken/editMessageText")
         val conn = url.openConnection() as java.net.HttpURLConnection
         conn.requestMethod = "POST"
@@ -317,13 +314,13 @@ private fun editTelegramMessage(botToken: String, chatId: Long, messageId: Long,
         val escapedText = newText.replace("\"", "\\\"").replace("\n", "\\n")
         val payload = "{\"chat_id\": $chatId, \"message_id\": $messageId, \"text\": \"$escapedText\", \"parse_mode\": \"Markdown\"}"
         conn.outputStream.write(payload.toByteArray())
+        if (conn.responseCode == 429) throw java.io.IOException("Rate limited")
         conn.responseCode
-        "ok"
     }
 }
 
-private fun answerCallbackQuery(botToken: String, callbackQueryId: String) {
-    executeTelegramRequest {
+private fun answerCallbackQuery(botToken: String, callbackQueryId: String): Int? {
+    return executeTelegramRequest {
         val url = java.net.URL("https://api.telegram.org/bot$botToken/answerCallbackQuery")
         val conn = url.openConnection() as java.net.HttpURLConnection
         conn.requestMethod = "POST"
@@ -331,8 +328,8 @@ private fun answerCallbackQuery(botToken: String, callbackQueryId: String) {
         conn.doOutput = true
         val payload = "{\"callback_query_id\": \"$callbackQueryId\"}"
         conn.outputStream.write(payload.toByteArray())
+        if (conn.responseCode == 429) throw java.io.IOException("Rate limited")
         conn.responseCode
-        "ok"
     }
 }
 
@@ -362,8 +359,9 @@ private fun sendTelegramDocument(botToken: String, chatId: Long, file: File, cap
 
             outputStream.write("--$boundary--\r\n".toByteArray())
         }
-        if (conn.responseCode == 200) "ok" else null
-    } != null
+        if (conn.responseCode == 429) throw java.io.IOException("Rate limited")
+        conn.responseCode == 200
+    } ?: false
 }
 
 // ==========================================
