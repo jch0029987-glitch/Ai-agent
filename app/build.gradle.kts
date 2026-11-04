@@ -61,8 +61,6 @@ android {
         targetCompatibility = JavaVersion.VERSION_17
     }
 
-    kotlinOptions { jvmTarget = "17" }
-
     packaging {
         jniLibs { useLegacyPackaging = true }
         resources {
@@ -73,6 +71,12 @@ android {
             excludes += "META-INF/native/libnetty_transport_native_epoll_aarch_64.so"
             excludes += "META-INF/native/libnetty_resolver_dns_native_macos_x86_64.dylib"
         }
+    }
+}
+
+kotlin {
+    compilerOptions {
+        jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_17)
     }
 }
 
