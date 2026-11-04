@@ -1,5 +1,4 @@
-package com.jeremy.ai.agent.services
-
+package com.jeremy.ai.agent
 import android.accessibilityservice.AccessibilityService
 import android.accessibilityservice.GestureDescription
 import android.graphics.Path
