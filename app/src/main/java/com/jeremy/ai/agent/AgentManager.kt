@@ -172,7 +172,16 @@ class AgentManager(private val context: Context) {
         telegramBotToken: String,
         telegramChatId: Long,
         telegramMessageId: Long
-    ): String = executePromptInternal(prompt, {}, telegramBotToken, telegramChatId, telegramMessageId)
+    ): String {
+        val activeToken = if (telegramBotToken.isBlank() || telegramBotToken == "YOUR_TELEGRAM_BOT_TOKEN") {
+            com.jeremy.ai.BuildConfig.TELEGRAM_BOT_TOKEN
+        } else {
+            telegramBotToken
+        }
+        TelegramChatContext.botToken = activeToken
+        TelegramChatContext.activeChatId = telegramChatId
+        return executePromptInternal(prompt, {}, activeToken, telegramChatId, telegramMessageId)
+    }
 
     private suspend fun executePromptInternal(
         prompt: String,
@@ -191,7 +200,7 @@ class AgentManager(private val context: Context) {
             if (telegramChatId != null) {
                 TelegramChatContext.activeChatId = telegramChatId
             }
-            if (!telegramBotToken.isNullOrBlank()) {
+            if (!telegramBotToken.isNullOrBlank() && telegramBotToken != "YOUR_TELEGRAM_BOT_TOKEN") {
                 TelegramChatContext.botToken = telegramBotToken
             }
 

@@ -226,8 +226,8 @@ private fun editTelegramMessage(botToken: String, chatId: Long, messageId: Long,
 
 fun Application.configureRouting() {
     val activeConnections = Collections.synchronizedSet(hashSetOf<WebSocketSession>())
-    // TODO: Replace with your actual Telegram Bot API Token string
-    val telegramBotToken = "YOUR_TELEGRAM_BOT_TOKEN"
+    // Pull Telegram Bot API Token directly from local.properties via BuildConfig
+    val telegramBotToken = com.jeremy.ai.BuildConfig.TELEGRAM_BOT_TOKEN
 
     routing {
         // --- Root Landing & Health Endpoints ---
