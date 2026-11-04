@@ -2,9 +2,16 @@ package com.jeremy.ai.agent
 
 import android.content.Context
 import android.content.Intent
-import com.jeremy.ai.agent.AgentAccessibilityService
+import com.jeremy.ai.backend.TelegramApprovalStore
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import java.util.UUID
+import java.util.concurrent.CompletableFuture
+
+object TelegramChatContext {
+    var activeChatId: Long? = null
+    var botToken: String = "YOUR_TELEGRAM_BOT_TOKEN"
+}
 
 class AgentToolRouter(
     private val context: Context,
@@ -36,7 +43,7 @@ class AgentToolRouter(
                 else -> rawToolName
             }
 
-            // 1. Human-in-the-Loop Guardrail: Intercept high-stakes or UI modification actions
+            // 1. Human-in-the-Loop Guardrail: Intercept high-stakes or UI modification actions via Telegram
             if (isSensitiveTool(toolName)) {
                 val approved = requestUserApproval(toolName, argValue)
                 if (!approved) {
@@ -172,6 +179,46 @@ class AgentToolRouter(
     }
 
     private suspend fun requestUserApproval(toolName: String, args: String): Boolean = withContext(Dispatchers.IO) {
-        return@withContext true
+        val chatId = TelegramChatContext.activeChatId
+        val botToken = TelegramChatContext.botToken
+
+        // If no Telegram chat session is currently active, default to auto-approve for local app tests
+        if (chatId == null || botToken == "YOUR_TELEGRAM_BOT_TOKEN") {
+            return@withContext true
+        }
+
+        val taskId = UUID.randomUUID().toString()
+        val future = CompletableFuture<Boolean>()
+        TelegramApprovalStore.pendingApprovals[taskId] = future
+
+        val messageText = "⚠️ *Security Gate: Action Approval Required*\n\nTool: `$toolName`\nArgs: `$args`"
+        val payload = """
+            {
+                "chat_id": $chatId,
+                "text": "$messageText",
+                "parse_mode": "Markdown",
+                "reply_markup": {
+                    "inline_keyboard": [[
+                        {"text": "✅ Approve", "callback_data": "approve:$taskId"},
+                        {"text": "⛔ Deny", "callback_data": "deny:$taskId"}
+                    ]]
+                }
+            }
+        """.trimIndent()
+
+        try {
+            val url = java.net.URL("https://api.telegram.org/bot$botToken/sendMessage")
+            val conn = url.openConnection() as java.net.HttpURLConnection
+            conn.requestMethod = "POST"
+            conn.setRequestProperty("Content-Type", "application/json")
+            conn.doOutput = true
+            conn.outputStream.write(payload.toByteArray())
+            conn.responseCode
+
+            // Block coroutine thread until inline button is tapped in Telegram
+            return@withContext future.get()
+        } catch (e: Exception) {
+            return@withContext false
+        }
     }
 }

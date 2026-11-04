@@ -23,7 +23,22 @@ object AgentBridge {
 
     suspend fun processPrompt(prompt: String, onToken: (String) -> Unit): String {
         val manager = agentManager ?: return "Error: AgentManager not initialized."
-        return manager.promptAgent(prompt, onToken)
+        return manager.promptAgent(prompt, onToken = onToken)
+    }
+
+    suspend fun processPromptWithTelegramUpdates(
+        prompt: String,
+        botToken: String,
+        chatId: Long,
+        messageId: Long
+    ): String {
+        val manager = agentManager ?: return "Error: AgentManager not initialized."
+        return manager.promptAgent(
+            prompt = prompt,
+            telegramBotToken = botToken,
+            telegramChatId = chatId,
+            telegramMessageId = messageId
+        )
     }
 }
 
@@ -130,11 +145,43 @@ class AgentManager(private val context: Context) {
         }
     }
 
-    suspend fun promptAgent(prompt: String, onToken: (String) -> Unit = {}): String = withContext(Dispatchers.Default) {
+    private fun updateTelegramTicker(botToken: String?, chatId: Long?, messageId: Long?, statusText: String) {
+        if (botToken.isNullOrBlank() || chatId == null || messageId == null || botToken == "YOUR_TELEGRAM_BOT_TOKEN") return
+        try {
+            val url = java.net.URL("https://api.telegram.org/bot$botToken/editMessageText")
+            val conn = url.openConnection() as java.net.HttpURLConnection
+            conn.requestMethod = "POST"
+            conn.setRequestProperty("Content-Type", "application/json")
+            conn.doOutput = true
+
+            val escapedText = statusText.replace("\"", "\\\"").replace("\n", "\\n")
+            val payload = "{\"chat_id\": $chatId, \"message_id\": $messageId, \"text\": \"$escapedText\", \"parse_mode\": \"Markdown\"}"
+            conn.outputStream.write(payload.toByteArray())
+            conn.responseCode
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to update Telegram ticker", e)
+        }
+    }
+
+    suspend fun promptAgent(
+        prompt: String,
+        onToken: (String) -> Unit = {},
+        telegramBotToken: String? = null,
+        telegramChatId: Long? = null,
+        telegramMessageId: Long? = null
+    ): String = withContext(Dispatchers.Default) {
         inferenceMutex.withLock {
             val localEngine = engine
             if (!isInitialized || localEngine == null) {
                 return@withContext "Error: LiteRT-LM Engine offline or uninitialized."
+            }
+
+            // Bind current Telegram session context for security approvals
+            if (telegramChatId != null) {
+                TelegramChatContext.activeChatId = telegramChatId
+            }
+            if (!telegramBotToken.isNullOrBlank()) {
+                TelegramChatContext.botToken = telegramBotToken
             }
 
             val trimmedPrompt = prompt.trim()
@@ -239,6 +286,14 @@ class AgentManager(private val context: Context) {
                     "recents", "overview" -> "open_recents"
                     else -> rawToolName
                 }
+
+                // Update Telegram progress ticker
+                updateTelegramTicker(
+                    botToken = telegramBotToken,
+                    chatId = telegramChatId,
+                    messageId = telegramMessageId,
+                    statusText = "⚙️ *Step $step/$maxSteps:* Executing `$toolName($argValue)`"
+                )
 
                 if (toolName == "finish") {
                     val finalSummary = if (argValue.isNotBlank()) argValue else "Task successfully completed."

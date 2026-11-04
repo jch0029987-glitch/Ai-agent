@@ -17,6 +17,7 @@ import java.io.File
 import android.os.Environment
 import java.util.Collections
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.CompletableFuture
 
 // ==========================================
 // 1. OpenAI Spec Data Models
@@ -102,7 +103,8 @@ data class ServerResponse(
 @Serializable
 data class TelegramUpdate(
     @SerialName("update_id") val updateId: Long,
-    val message: TelegramMessage? = null
+    val message: TelegramMessage? = null,
+    @SerialName("callback_query") val callbackQuery: TelegramCallbackQuery? = null
 )
 
 @Serializable
@@ -118,9 +120,20 @@ data class TelegramChat(
     val type: String
 )
 
+@Serializable
+data class TelegramCallbackQuery(
+    val id: String,
+    val data: String? = null,
+    val message: TelegramMessage? = null
+)
+
 // ==========================================
-// 4. Multi-Round Chat Session Manager
+// 4. Approval & Session Stores
 // ==========================================
+
+object TelegramApprovalStore {
+    val pendingApprovals = ConcurrentHashMap<String, CompletableFuture<Boolean>>()
+}
 
 object ChatSessionManager {
     private val sessions = ConcurrentHashMap<String, MutableList<Pair<String, String>>>()
@@ -139,7 +152,7 @@ object ChatSessionManager {
 }
 
 // ==========================================
-// 5. Utility: Scan Local Model Files
+// 5. Utility: Scan Local Model Files & Telegram API Helpers
 // ==========================================
 
 fun getAvailableModels(): List<OpenAIModelObject> {
@@ -168,12 +181,53 @@ fun getAvailableModels(): List<OpenAIModelObject> {
     return modelList
 }
 
+private fun sendTelegramMessage(botToken: String, chatId: Long, text: String): Long? {
+    return try {
+        val url = java.net.URL("https://api.telegram.org/bot$botToken/sendMessage")
+        val conn = url.openConnection() as java.net.HttpURLConnection
+        conn.requestMethod = "POST"
+        conn.setRequestProperty("Content-Type", "application/json")
+        conn.doOutput = true
+
+        val escapedText = text.replace("\"", "\\\"").replace("\n", "\\n")
+        val payload = "{\"chat_id\": $chatId, \"text\": \"$escapedText\", \"parse_mode\": \"Markdown\"}"
+        conn.outputStream.write(payload.toByteArray())
+
+        if (conn.responseCode == 200) {
+            val responseStr = conn.inputStream.bufferedReader().use { it.readText() }
+            val regex = "\"message_id\":(\\d+)".toRegex()
+            regex.find(responseStr)?.groupValues?.get(1)?.toLongOrNull()
+        } else null
+    } catch (e: Exception) {
+        null
+    }
+}
+
+private fun editTelegramMessage(botToken: String, chatId: Long, messageId: Long, newText: String) {
+    try {
+        val url = java.net.URL("https://api.telegram.org/bot$botToken/editMessageText")
+        val conn = url.openConnection() as java.net.HttpURLConnection
+        conn.requestMethod = "POST"
+        conn.setRequestProperty("Content-Type", "application/json")
+        conn.doOutput = true
+
+        val escapedText = newText.replace("\"", "\\\"").replace("\n", "\\n")
+        val payload = "{\"chat_id\": $chatId, \"message_id\": $messageId, \"text\": \"$escapedText\", \"parse_mode\": \"Markdown\"}"
+        conn.outputStream.write(payload.toByteArray())
+        conn.responseCode
+    } catch (e: Exception) {
+        // Handle gracefully
+    }
+}
+
 // ==========================================
 // 6. Ktor Routing Configuration
 // ==========================================
 
 fun Application.configureRouting() {
     val activeConnections = Collections.synchronizedSet(hashSetOf<WebSocketSession>())
+    // TODO: Replace with your actual Telegram Bot API Token string
+    val telegramBotToken = "YOUR_TELEGRAM_BOT_TOKEN"
 
     routing {
         // --- Root Landing & Health Endpoints ---
@@ -196,13 +250,10 @@ fun Application.configureRouting() {
         }
 
         // --- OpenAI Standard API Endpoints ---
-
-        // GET /v1/models
         get("/v1/models") {
             call.respond(OpenAIModelListResponse(data = getAvailableModels()))
         }
 
-        // POST /v1/chat/completions (Supports OpenClaw, Claude Code, & standard OpenAI Clients)
         post("/v1/chat/completions") {
             try {
                 val request = call.receive<OpenAIChatRequest>()
@@ -223,7 +274,6 @@ fun Application.configureRouting() {
 
                 val lastUserMessage = request.messages.lastOrNull { it.role.lowercase() == "user" }?.content ?: ""
 
-                // Handle Streaming Requests (SSE formatting)
                 if (request.stream == true) {
                     call.respondTextWriter(contentType = ContentType.Text.EventStream) {
                         val fullResponseAccumulator = StringBuilder()
@@ -249,7 +299,6 @@ fun Application.configureRouting() {
                             }
                         }
 
-                        // Send finish chunk
                         val doneChunk = OpenAIChatResponse(
                             id = reqId,
                             model = requestedModel,
@@ -266,13 +315,11 @@ fun Application.configureRouting() {
                         write("data: [DONE]\n\n")
                         flush()
 
-                        // Record session turn
                         val clientId = request.user ?: "openai-client"
                         ChatSessionManager.appendMessage(clientId, "User", lastUserMessage)
                         ChatSessionManager.appendMessage(clientId, "Assistant", fullResponseAccumulator.toString().trim())
                     }
                 } else {
-                    // Handle Non-Streaming Direct Requests
                     val responseAccumulator = StringBuilder()
 
                     withContext(Dispatchers.Default) {
@@ -319,7 +366,6 @@ fun Application.configureRouting() {
                 }
 
                 val history = ChatSessionManager.getHistory(clientId)
-
                 val fullPrompt = buildString {
                     for ((role, text) in history) {
                         append("$role: $text\n")
@@ -359,6 +405,33 @@ fun Application.configureRouting() {
         post("/api/telegram/webhook") {
             try {
                 val update = call.receive<TelegramUpdate>()
+
+                // Handle Inline Button Callback Queries (Approvals)
+                val callbackQuery = update.callbackQuery
+                if (callbackQuery != null) {
+                    val data = callbackQuery.data ?: ""
+                    val msg = callbackQuery.message
+                    val chatId = msg?.chat?.id
+                    val messageId = msg?.messageId
+
+                    if (data.contains(":") && chatId != null && messageId != null) {
+                        val parts = data.split(":")
+                        val action = parts[0] // "approve" or "deny"
+                        val taskId = parts[1]
+
+                        val approved = (action == "approve")
+                        val future = TelegramApprovalStore.pendingApprovals.remove(taskId)
+                        future?.complete(approved)
+
+                        val statusText = if (approved) "✅ *Action Approved*" else "⛔ *Action Denied*"
+                        editTelegramMessage(telegramBotToken, chatId, messageId, "${msg.text}\n\n$statusText")
+                    }
+
+                    call.respond(HttpStatusCode.OK)
+                    return@post
+                }
+
+                // Handle Standard Messages
                 val message = update.message
                 val text = message?.text
                 val chatId = message?.chat?.id
@@ -370,6 +443,8 @@ fun Application.configureRouting() {
                         call.respond(HttpStatusCode.OK)
                         return@post
                     }
+
+                    val statusMessageId = sendTelegramMessage(telegramBotToken, chatId, "⚙️ *Agent Initializing...*\n`Processing prompt`")
 
                     val history = ChatSessionManager.getHistory(clientId)
                     val fullPrompt = buildString {
@@ -387,6 +462,11 @@ fun Application.configureRouting() {
                     }
 
                     val responseText = responseAccumulator.toString().trim()
+
+                    if (statusMessageId != null) {
+                        editTelegramMessage(telegramBotToken, chatId, statusMessageId, "✅ *Task Completed*\n\n$responseText")
+                    }
+
                     ChatSessionManager.appendMessage(clientId, "User", text)
                     ChatSessionManager.appendMessage(clientId, "Assistant", responseText)
                 }
@@ -436,7 +516,7 @@ fun Application.configureRouting() {
                             }
 
                             val finalResponseText = responseAccumulator.toString().trim()
-                            
+
                             val chunk = ServerResponse(token = finalResponseText, isFinished = false)
                             outgoing.send(Frame.Text(Json.encodeToString(ServerResponse.serializer(), chunk)))
 
