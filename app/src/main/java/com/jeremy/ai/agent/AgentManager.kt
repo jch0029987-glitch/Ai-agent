@@ -38,12 +38,13 @@ class AgentManager(private val context: Context) {
     private val toolRouter = AgentToolRouter(context, githubClient)
 
     init {
-        // Automatically bind to the Ktor backend bridge
         AgentBridge.agentManager = this
     }
 
     companion object {
         private const val TAG = "AgentManager"
+        private val CASUAL_CHAT_REGEX = Regex("^(hi|hello|hey|sup|what's up|who are you|help|thanks|thank you).*")
+        private val ACTION_KEYWORDS = listOf("open", "launch", "click", "tap", "type", "get", "check", "list", "show", "press", "find", "task:")
     }
 
     private fun showToast(message: String) {
@@ -52,12 +53,11 @@ class AgentManager(private val context: Context) {
         }
     }
 
-    suspend fun setupEngineFromStorage(modelPathOrName: String = "qwen.task"): Result<Boolean> = withContext(Dispatchers.IO) {
+    suspend fun setupEngineFromStorage(modelPathOrName: String = "gemma-4-E2B-it.litertlm"): Result<Boolean> = withContext(Dispatchers.IO) {
         inferenceMutex.withLock {
             try {
                 val fileName = modelPathOrName.trim()
 
-                // 1. Resolve target file path cleanly using absolute paths
                 val targetFile = if (fileName.startsWith("/")) {
                     File(fileName)
                 } else {
@@ -78,7 +78,7 @@ class AgentManager(private val context: Context) {
                 if (!targetFile.exists()) {
                     val errorMsg = "File does not exist at path: ${targetFile.absolutePath}"
                     Log.e(TAG, errorMsg)
-                    showToast("Error: Model file not found at $fileName")
+                    showToast("Model file not found at $fileName")
                     isInitialized = false
                     return@withContext Result.failure(IllegalArgumentException(errorMsg))
                 }
@@ -86,43 +86,32 @@ class AgentManager(private val context: Context) {
                 if (!targetFile.canRead()) {
                     val errorMsg = "Permission denied: Cannot read file at ${targetFile.absolutePath}"
                     Log.e(TAG, errorMsg)
-                    showToast("Error: Permission denied reading $fileName")
+                    showToast("Permission denied reading $fileName")
                     isInitialized = false
                     return@withContext Result.failure(SecurityException(errorMsg))
                 }
 
-                // Clean up previous native allocations before binding new engine
                 shutdownEngineInternal()
 
                 val nativeLibDir = context.applicationInfo.nativeLibraryDir
-                var activeBackendName = "NPU (Tensor TPU)"
+                var activeBackendName = "GPU (Vulkan/OpenCL)"
 
-                // 2. Configure LiteRT-LM Engine with cascading backend fallback: NPU -> GPU -> CPU
+                // Performance-optimized backend configuration: Prefer GPU delegate for maximum mobile throughput on Tensor G4, fallback to CPU
                 val engineConfig = try {
-                    Log.i(TAG, "Attempting to initialize on Tensor NPU...")
+                    Log.i(TAG, "Initializing LiteRT-LM Engine on GPU backend...")
                     EngineConfig(
                         modelPath = targetFile.absolutePath,
-                        backend = Backend.NPU(nativeLibraryDir = nativeLibDir)
+                        backend = Backend.GPU()
                     )
-                } catch (eNpu: Exception) {
-                    Log.w(TAG, "NPU backend unavailable, falling back to GPU delegate", eNpu)
-                    activeBackendName = "GPU"
-                    try {
-                        EngineConfig(
-                            modelPath = targetFile.absolutePath,
-                            backend = Backend.GPU()
-                        )
-                    } catch (eGpu: Exception) {
-                        Log.w(TAG, "GPU backend unavailable, falling back to CPU", eGpu)
-                        activeBackendName = "CPU"
-                        EngineConfig(
-                            modelPath = targetFile.absolutePath,
-                            backend = Backend.CPU()
-                        )
-                    }
+                } catch (eGpu: Exception) {
+                    Log.w(TAG, "GPU backend unavailable, falling back to CPU", eGpu)
+                    activeBackendName = "CPU"
+                    EngineConfig(
+                        modelPath = targetFile.absolutePath,
+                        backend = Backend.CPU()
+                    )
                 }
 
-                Log.i(TAG, "Initializing LiteRT-LM Engine on $activeBackendName...")
                 val newEngine = Engine(engineConfig)
                 newEngine.initialize()
                 engine = newEngine
@@ -151,11 +140,9 @@ class AgentManager(private val context: Context) {
             val trimmedPrompt = prompt.trim()
             val lowerPrompt = trimmedPrompt.lowercase()
 
-            val actionKeywords = listOf("open", "launch", "click", "tap", "type", "get", "check", "list", "show", "press", "find", "task:")
-            val isActionCommand = actionKeywords.any { lowerPrompt.contains(it) }
-
+            val isActionCommand = ACTION_KEYWORDS.any { lowerPrompt.contains(it) }
             val isCasualChat = !isActionCommand && 
-                               (lowerPrompt.matches(Regex("^(hi|hello|hey|sup|what's up|who are you|help|thanks|thank you).*")) || lowerPrompt.split(" ").size <= 2)
+                               (lowerPrompt.matches(CASUAL_CHAT_REGEX) || lowerPrompt.split(" ").size <= 2)
 
             if (isCasualChat) {
                 val conversationConfig = ConversationConfig(
@@ -170,48 +157,38 @@ class AgentManager(private val context: Context) {
                 }
             }
 
-            // --- Autonomous Agent Execution Loop ---
+            // --- Performance-Optimized Autonomous Loop ---
             val maxSteps = 6
             val executionHistory = StringBuilder()
             val currentGoal = prompt
 
             for (step in 1..maxSteps) {
                 val rawNotification = AgentNotificationListener.getContextSummary()
-                val notificationContext = if (rawNotification.length > 300) rawNotification.take(300) + "... [truncated]" else rawNotification
+                val notificationContext = if (rawNotification.length > 200) rawNotification.take(200) + "..." else rawNotification
 
                 val screenService = AgentAccessibilityService.instance
-                val rawScreen = screenService?.getScreenContentSummary() ?: "Accessibility Service offline."
-                val screenContext = if (rawScreen.length > 500) rawScreen.take(500) + "... [truncated]" else rawScreen
+                val rawScreen = screenService?.getScreenContentSummary() ?: "Accessibility offline."
+                val screenContext = if (rawScreen.length > 300) rawScreen.take(300) + "..." else rawScreen
+
+                // Keep context window tight to maximize token generation performance and prevent KV-cache bloat
+                val trimmedHistory = if (executionHistory.length > 600) {
+                    executionHistory.takeLast(600)
+                } else {
+                    executionHistory.toString()
+                }
 
                 val systemInstructionText = """
-                    You are an autonomous Android action engine. You execute composite tasks step-by-step using tools.
-                    
-                    [RECENT NOTIFICATIONS]
-                    $notificationContext
-                    
-                    [CURRENT SCREEN HIERARCHY]
-                    $screenContext
-                    
-                    [EXECUTION HISTORY]
-                    $executionHistory
+                    You are an autonomous Android action engine. Execute composite tasks step-by-step.
+                    [NOTIFICATIONS]: $notificationContext
+                    [SCREEN HIERARCHY]: $screenContext
+                    [HISTORY]: $trimmedHistory
                     
                     Rules:
-                    - Output only a single TOOL and ARG pair per turn using format:
+                    - Output format:
                       TOOL: tool_name
                       ARG: argument_value
-                    - Available tools: 
-                      * open_browser (ARG: url)
-                      * github_get_issues (ARG: owner/repo)
-                      * get_screen_content (ARG: none)
-                      * get_recent_notifications (ARG: none)
-                      * open_app (ARG: package_name)
-                      * click_text (ARG: button_or_label_text)
-                      * type_text (ARG: text_to_input)
-                      * tap_xy (ARG: x,y coordinates)
-                      * scroll_down / scroll_up (ARG: none)
-                      * go_home / go_back / open_recents / open_notifications (ARG: none)
-                      * finish (ARG: final summary)
-                    - When the overall task is completely fulfilled, use TOOL: finish with ARG: summary of results.
+                    - Tools: open_browser, github_get_issues, get_screen_content, get_recent_notifications, open_app, click_text, type_text, tap_xy, scroll_down, scroll_up, go_home, go_back, open_recents, open_notifications, finish
+                    - Use TOOL: finish with ARG: summary when done.
                 """.trimIndent()
 
                 val conversationConfig = ConversationConfig(
@@ -224,12 +201,7 @@ class AgentManager(private val context: Context) {
 
                 val toolIndex = rawModelOutput.indexOf("TOOL:")
                 val cleanOutput = if (toolIndex != -1) rawModelOutput.substring(toolIndex) else rawModelOutput
-
-                val formattedOutput = if (cleanOutput.startsWith("TOOL:")) {
-                    cleanOutput
-                } else {
-                    "TOOL:${cleanOutput.trimStart()}"
-                }
+                val formattedOutput = if (cleanOutput.startsWith("TOOL:")) cleanOutput else "TOOL:${cleanOutput.trimStart()}"
 
                 val lines = formattedOutput.lines().map { it.trim() }
                 val toolLine = lines.find { it.startsWith("TOOL:") } ?: "TOOL: unknown"
@@ -238,7 +210,6 @@ class AgentManager(private val context: Context) {
                 var rawToolName = toolLine.removePrefix("TOOL:").trim().lowercase()
                 var argValue = argLine?.removePrefix("ARG:")?.trim() ?: ""
 
-                // Robustly handle model outputting function call syntax on the TOOL line (e.g. open_app("apps"))
                 if (rawToolName.contains("(")) {
                     val parenIndex = rawToolName.indexOf('(')
                     val innerArgs = rawToolName.substring(parenIndex + 1, rawToolName.lastIndexOf(')')).trim()
@@ -268,11 +239,12 @@ class AgentManager(private val context: Context) {
 
                 if (toolName == "finish") {
                     val finalSummary = if (argValue.isNotBlank()) argValue else "Task successfully completed."
+                    onToken(finalSummary)
                     return@withContext "Task Finished Successfully:\n$finalSummary\n\nExecution Log:\n$executionHistory"
                 }
 
                 val toolResult = toolRouter.executeToolCall("TOOL: $toolName\nARG: $argValue")
-                executionHistory.append("Step $step -> TOOL: $toolName (ARG: $argValue)\nResult: $toolResult\n\n")
+                executionHistory.append("Step $step -> $toolName($argValue): $toolResult\n")
 
                 if (step == maxSteps) {
                     return@withContext "Reached maximum iteration limit ($maxSteps steps).\n\nHistory:\n$executionHistory"
