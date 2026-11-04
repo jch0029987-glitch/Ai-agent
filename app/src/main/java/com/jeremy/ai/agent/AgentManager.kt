@@ -162,6 +162,9 @@ class AgentManager(private val context: Context) {
             val executionHistory = StringBuilder()
             val currentGoal = prompt
 
+            var lastToolName = ""
+            var lastArgValue = ""
+
             for (step in 1..maxSteps) {
                 val rawNotification = AgentNotificationListener.getContextSummary()
                 val notificationContext = if (rawNotification.length > 200) rawNotification.take(200) + "..." else rawNotification
@@ -187,8 +190,8 @@ class AgentManager(private val context: Context) {
                     - Output format:
                       TOOL: tool_name
                       ARG: argument_value
-                    - Tools: open_browser, github_get_issues, get_screen_content, get_recent_notifications, open_app, click_text, type_text, tap_xy, scroll_down, scroll_up, go_home, go_back, open_recents, open_notifications, finish
-                    - Use TOOL: finish with ARG: summary when done.
+                    - Tools: open_browser, github_get_issues, get_screen_content, get_recent_notifications, open_app, get_installed_apps, open_app_picker, click_text, type_text, tap_xy, scroll_down, scroll_up, go_home, go_back, open_recents, open_notifications, finish
+                    - Use TOOL: finish with ARG: summary when done. Do not repeat identical tool calls.
                 """.trimIndent()
 
                 val conversationConfig = ConversationConfig(
@@ -243,7 +246,16 @@ class AgentManager(private val context: Context) {
                     return@withContext "Task Finished Successfully:\n$finalSummary\n\nExecution Log:\n$executionHistory"
                 }
 
-                val toolResult = toolRouter.executeToolCall("TOOL: $toolName\nARG: $argValue")
+                // Guardrail: Intercept duplicate tool loops
+                val toolResult = if (toolName == lastToolName && argValue == lastArgValue) {
+                    "Error: Duplicate loop detected. You already called $toolName with argument '$argValue'. Try a different action or call finish."
+                } else {
+                    toolRouter.executeToolCall("TOOL: $toolName\nARG: $argValue")
+                }
+
+                lastToolName = toolName
+                lastArgValue = argValue
+
                 executionHistory.append("Step $step -> $toolName($argValue): $toolResult\n")
 
                 if (step == maxSteps) {
