@@ -57,7 +57,7 @@ class AgentManager(private val context: Context) {
     companion object {
         private const val TAG = "AgentManager"
         private val CASUAL_CHAT_REGEX = Regex("^(hi|hello|hey|sup|what's up|who are you|help|thanks|thank you).*")
-        private val ACTION_KEYWORDS = listOf("open", "launch", "click", "tap", "type", "get", "check", "list", "show", "press", "find", "read", "patch", "write", "task:")
+        private val ACTION_KEYWORDS = listOf("open", "launch", "click", "tap", "type", "get", "check", "list", "show", "press", "find", "read", "patch", "write", "task:", "execute", "git", "shell", "search")
     }
 
     private fun showToast(message: String) {
@@ -213,7 +213,7 @@ class AgentManager(private val context: Context) {
 
             if (isCasualChat) {
                 val conversationConfig = ConversationConfig(
-                    systemInstruction = Contents.of("You are a helpful, concise AI assistant running locally on a Pixel 9. Respond in 1-2 brief English sentences only.")
+                    systemInstruction = Contents.of("You are a helpful, concise AI coding assistant running locally via Termux & Ktor on a Pixel 9. Respond in 1-2 brief English sentences only.")
                 )
                 
                 localEngine.createConversation(conversationConfig).use { conversation ->
@@ -224,8 +224,8 @@ class AgentManager(private val context: Context) {
                 }
             }
 
-            // --- Performance-Optimized Autonomous Loop ---
-            val maxSteps = 6
+            // --- Performance-Optimized Autonomous Coding Agent Loop ---
+            val maxSteps = 8
             val executionHistory = StringBuilder()
             val currentGoal = prompt
 
@@ -241,14 +241,14 @@ class AgentManager(private val context: Context) {
                 val screenContext = if (rawScreen.length > 300) rawScreen.take(300) + "..." else rawScreen
 
                 // Keep context window tight to maximize token generation performance and prevent KV-cache bloat
-                val trimmedHistory = if (executionHistory.length > 600) {
-                    executionHistory.takeLast(600)
+                val trimmedHistory = if (executionHistory.length > 800) {
+                    executionHistory.takeLast(800)
                 } else {
                     executionHistory.toString()
                 }
 
                 val systemInstructionText = """
-                    You are an autonomous Android action engine. Execute composite tasks step-by-step.
+                    You are an autonomous AI coding agent (Claude Code style) running on a local Android Termux & Ktor engine. Execute complex development and system tasks step-by-step.
                     [NOTIFICATIONS]: $notificationContext
                     [SCREEN HIERARCHY]: $screenContext
                     [HISTORY]: $trimmedHistory
@@ -257,7 +257,7 @@ class AgentManager(private val context: Context) {
                     - Output format:
                       TOOL: tool_name
                       ARG: argument_value
-                    - Tools: open_browser, github_get_issues, read_file, write_patch, get_screen_content, get_recent_notifications, open_app, get_installed_apps, open_app_picker, click_text, type_text, tap_xy, scroll_down, scroll_up, go_home, go_back, open_recents, open_notifications, finish
+                    - Available Tools: execute_shell, patch_file, search_code, read_file, write_patch, open_browser, github_get_issues, get_screen_content, get_recent_notifications, open_app, get_installed_apps, click_text, type_text, tap_xy, scroll_down, scroll_up, go_home, go_back, finish
                     - Use TOOL: finish with ARG: summary when done. Do not repeat identical tool calls.
                 """.trimIndent()
 
@@ -306,6 +306,7 @@ class AgentManager(private val context: Context) {
                     "recents", "overview" -> "open_recents"
                     "cat", "view_file" -> "read_file"
                     "patch", "write_file", "save_file" -> "write_patch"
+                    "shell", "bash", "cmd" -> "execute_shell"
                     else -> rawToolName
                 }
 

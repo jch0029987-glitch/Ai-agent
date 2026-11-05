@@ -217,7 +217,7 @@ object ShellSessionManager {
             context.startForegroundService(intent)
 
             return try {
-                future.get(4, TimeUnit.SECONDS) ?: "Command executed with no output."
+                future.get(5, TimeUnit.SECONDS) ?: "Command executed with no output."
             } catch (e: java.util.concurrent.TimeoutException) {
                 "Error: Termux execution timed out waiting for callback."
             } finally {
@@ -229,15 +229,23 @@ object ShellSessionManager {
         }
     }
 
-    fun handleResult(executionId: Int, resultBundle: Bundle?) {
+    fun handleResult(executionId: Int, intent: Intent, bundle: Bundle?) {
         val future = pendingResults.remove(executionId) ?: return
-        val stdout = resultBundle?.let { bundle ->
-            bundle.getString("com.termux.plugin.result.bundle.stdout")
-                ?: bundle.getString("stdout")
-                ?: bundle.keySet().firstNotNullOfOrNull { key -> 
-                    if (key.contains("stdout", true)) bundle.getString(key) else null 
-                }
-        } ?: "Command completed successfully."
+
+        val allExtras = mutableMapOf<String, Any?>()
+        bundle?.keySet()?.forEach { key -> allExtras[key] = bundle.get(key) }
+        intent.extras?.keySet()?.forEach { key -> allExtras["intent_$key"] = intent.extras?.get(key) }
+
+        val stdout = bundle?.getString("stdout")
+            ?: bundle?.getString("com.termux.RUN_COMMAND_STDOUT")
+            ?: bundle?.getString("com.termux.plugin.result.bundle.stdout")
+            ?: intent.getStringExtra("stdout")
+            ?: intent.getStringExtra("com.termux.RUN_COMMAND_STDOUT")
+            ?: allExtras.entries.firstOrNull { 
+                it.key.contains("stdout", true) || it.key.contains("output", true) 
+            }?.value?.toString()
+            ?: allExtras.entries.firstOrNull { it.value is String && (it.value as String).length > 5 }?.value?.toString()
+            ?: "Command completed successfully."
 
         future.complete(stdout.take(4000))
     }
@@ -246,8 +254,10 @@ object ShellSessionManager {
 class TermuxResultReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
         val executionId = intent.getIntExtra("execution_id", -1)
-        val bundle = intent.getBundleExtra("com.termux.plugin.result.bundle") ?: intent.extras
-        ShellSessionManager.handleResult(executionId, bundle)
+        val bundle = intent.getBundleExtra("com.termux.plugin.result.bundle") 
+            ?: intent.getBundleExtra("result") 
+            ?: intent.extras
+        ShellSessionManager.handleResult(executionId, intent, bundle)
     }
 }
 
@@ -401,6 +411,8 @@ fun Application.configureRouting() {
                             "tools" to kotlinx.serialization.json.JsonArray(listOf(
                                 kotlinx.serialization.json.JsonObject(mapOf("name" to kotlinx.serialization.json.JsonPrimitive("read_workspace_file"), "description" to kotlinx.serialization.json.JsonPrimitive("Read contents of a local file"))),
                                 kotlinx.serialization.json.JsonObject(mapOf("name" to kotlinx.serialization.json.JsonPrimitive("write_workspace_file"), "description" to kotlinx.serialization.json.JsonPrimitive("Write or overwrite a file"))),
+                                kotlinx.serialization.json.JsonObject(mapOf("name" to kotlinx.serialization.json.JsonPrimitive("patch_file"), "description" to kotlinx.serialization.json.JsonPrimitive("Patch a file using search and replace blocks"))),
+                                kotlinx.serialization.json.JsonObject(mapOf("name" to kotlinx.serialization.json.JsonPrimitive("search_code"), "description" to kotlinx.serialization.json.JsonPrimitive("Search codebase using ripgrep or grep"))),
                                 kotlinx.serialization.json.JsonObject(mapOf("name" to kotlinx.serialization.json.JsonPrimitive("list_directory"), "description" to kotlinx.serialization.json.JsonPrimitive("List files in directory"))),
                                 kotlinx.serialization.json.JsonObject(mapOf("name" to kotlinx.serialization.json.JsonPrimitive("execute_shell"), "description" to kotlinx.serialization.json.JsonPrimitive("Execute a shell command")))
                             ))
@@ -447,6 +459,27 @@ fun Application.configureRouting() {
                                 target.parentFile?.mkdirs()
                                 target.writeText(content)
                                 "Successfully wrote ${target.absolutePath}"
+                            }
+                            "patch_file" -> {
+                                val path = arguments?.get("path")?.jsonPrimitive?.content ?: ""
+                                val search = arguments?.get("search")?.jsonPrimitive?.content ?: ""
+                                val replace = arguments?.get("replace")?.jsonPrimitive?.content ?: ""
+                                val target = resolveWorkspaceFile(path)
+                                if (target.exists() && target.canWrite()) {
+                                    val fileContent = target.readText()
+                                    if (fileContent.contains(search)) {
+                                        target.writeText(fileContent.replace(search, replace))
+                                        "Successfully patched ${target.absolutePath}"
+                                    } else {
+                                        "Error: Search block not found in file"
+                                    }
+                                } else {
+                                    "Error: File not found or unwritable"
+                                }
+                            }
+                            "search_code" -> {
+                                val query = arguments?.get("query")?.jsonPrimitive?.content ?: arguments?.get("command")?.jsonPrimitive?.content ?: ""
+                                ShellSessionManager.executeCommand(ShellSessionManager.appContext, 0L, "rg --line-number --no-heading '$query' /data/data/com.termux/files/home/Ai-agent || grep -rnw '/data/data/com.termux/files/home/Ai-agent' -e '$query'")
                             }
                             "list_directory" -> {
                                 val path = arguments?.get("path")?.jsonPrimitive?.content ?: "."
