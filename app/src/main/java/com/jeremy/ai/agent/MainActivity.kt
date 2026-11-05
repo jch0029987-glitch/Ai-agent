@@ -45,8 +45,8 @@ class MainActivity : ComponentActivity() {
         Manifest.permission.READ_CONTACTS,
         Manifest.permission.ACCESS_FINE_LOCATION,
         Manifest.permission.POST_NOTIFICATIONS,
-        Manifest.permission.READ_EXTERNAL_STORAGE
-         "com.termux.permission.RUN_COMMAND"
+        Manifest.permission.READ_EXTERNAL_STORAGE,
+        "com.termux.permission.RUN_COMMAND"
     )
 
     private val permissionLauncher = registerForActivityResult(
