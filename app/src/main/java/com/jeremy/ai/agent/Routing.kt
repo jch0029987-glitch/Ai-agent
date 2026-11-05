@@ -9,7 +9,6 @@ import io.ktor.server.response.*
 import io.ktor.server.routing.*
 import io.ktor.server.websocket.*
 import io.ktor.websocket.*
-import io.ktor.sse.*
 
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.GlobalScope
@@ -300,8 +299,6 @@ private fun answerCallbackQuery(botToken: String, callbackQueryId: String): Int?
 // ==========================================
 
 fun Application.configureRouting() {
-    install(SSE)
-
     val telegramBotToken = BuildConfig.TELEGRAM_BOT_TOKEN
     try { CronJobManager.startDispatcher(telegramBotToken) } catch (e: Exception) {}
 
