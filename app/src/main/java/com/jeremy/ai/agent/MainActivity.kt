@@ -20,6 +20,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.ui.Modifier
 import androidx.core.content.ContextCompat
 import com.jeremy.ai.agent.ui.AgentChatScreen
+import com.jeremy.ai.backend.ShellSessionManager
 import com.jeremy.ai.backend.configureRouting
 import io.ktor.serialization.kotlinx.json.*
 import io.ktor.server.application.install
@@ -63,6 +64,10 @@ class MainActivity : ComponentActivity() {
         
         setupGlobalCrashHandler()
         checkAndRequestPermissions()
+
+        // Bind application context for Termux Intent shell bridge
+        ShellSessionManager.appContext = applicationContext
+
         startEmbeddedServer()
         startTelegramBridge()
 
