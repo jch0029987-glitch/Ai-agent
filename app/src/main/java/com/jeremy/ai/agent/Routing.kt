@@ -1,4 +1,4 @@
-package com.jeremy.ai.agent.backend
+package com.jeremy.ai.backend
 
 import com.jeremy.ai.agent.AgentBridge
 import com.jeremy.ai.agent.BuildConfig
