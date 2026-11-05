@@ -11,14 +11,6 @@ import io.ktor.server.websocket.*
 import io.ktor.websocket.*
 import io.ktor.sse.*
 
-// Official Model Context Protocol (MCP) SDK Ktor server integrations
-import io.modelcontextprotocol.kotlin.sdk.server.mcp
-import io.modelcontextprotocol.kotlin.sdk.Implementation
-import io.modelcontextprotocol.kotlin.sdk.ServerCapabilities
-import io.modelcontextprotocol.kotlin.sdk.TextContent
-import io.modelcontextprotocol.kotlin.sdk.CallToolResult
-import io.modelcontextprotocol.kotlin.sdk.ReadResourceResult
-
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.GlobalScope
 import kotlinx.coroutines.delay
@@ -27,6 +19,9 @@ import kotlinx.coroutines.withContext
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.jsonPrimitive
+import kotlinx.serialization.json.jsonObject
 import java.io.File
 import android.os.Environment
 import java.util.Collections
@@ -81,7 +76,33 @@ data class OpenAIModelObject(
 data class OpenAIModelListResponse(val `object`: String = "list", val data: List<OpenAIModelObject>)
 
 // ==========================================
-// 2. Legacy / Native Client Models
+// 2. Standalone JSON-RPC MCP Protocol Models
+// ==========================================
+
+@Serializable
+data class JsonRpcRequest(
+    val jsonrpc: String = "2.0",
+    val id: kotlinx.serialization.json.JsonElement? = null,
+    val method: String,
+    val params: JsonObject? = null
+)
+
+@Serializable
+data class JsonRpcResponse(
+    val jsonrpc: String = "2.0",
+    val id: kotlinx.serialization.json.JsonElement? = null,
+    val result: JsonObject? = null,
+    val error: JsonRpcError? = null
+)
+
+@Serializable
+data class JsonRpcError(
+    val code: Int,
+    val message: String
+)
+
+// ==========================================
+// 3. Legacy / Native Client Models
 // ==========================================
 
 @Serializable
@@ -99,7 +120,7 @@ data class ClientMessage(
 data class ServerResponse(val token: String, val isFinished: Boolean)
 
 // ==========================================
-// 3. Telegram Bot DTO Models
+// 4. Telegram Bot DTO Models
 // ==========================================
 
 @Serializable
@@ -119,7 +140,7 @@ data class TelegramChat(val id: Long, val type: String)
 data class TelegramCallbackQuery(val id: String, val data: String? = null, val message: TelegramMessage? = null)
 
 // ==========================================
-// 4. Stores & Shell Manager
+// 5. Stores & Shell Manager
 // ==========================================
 
 object TelegramApprovalStore {
@@ -196,7 +217,7 @@ object CronJobManager {
 }
 
 // ==========================================
-// 5. Utilities & Path Resolution
+// 6. Utilities & Path Resolution
 // ==========================================
 
 fun getAvailableModels(): List<OpenAIModelObject> {
@@ -206,7 +227,7 @@ fun getAvailableModels(): List<OpenAIModelObject> {
         listOf(File(externalStorage, "Download/models"), File(externalStorage, "Download")).forEach { dir ->
             if (dir.exists() && dir.isDirectory) {
                 dir.listFiles { file -> file.isFile && (file.name.endsWith(".litertlm", true) || file.name.endsWith(".task", true)) }
-                    ?.forEach { modelList.add(OpenAIModelObject(id = modelFile.name)) }
+                    ?.forEach { modelFile -> modelList.add(OpenAIModelObject(id = modelFile.name)) }
             }
         }
     } catch (e: Exception) {}
@@ -275,93 +296,121 @@ private fun answerCallbackQuery(botToken: String, callbackQueryId: String): Int?
 }
 
 // ==========================================
-// 6. Ktor Routing & Full-Feature MCP Server
+// 7. Ktor Routing & Standalone JSON-RPC MCP Server
 // ==========================================
 
 fun Application.configureRouting() {
     install(SSE)
 
-    val activeConnections = Collections.synchronizedSet(hashSetOf<WebSocketSession>())
     val telegramBotToken = BuildConfig.TELEGRAM_BOT_TOKEN
-
     try { CronJobManager.startDispatcher(telegramBotToken) } catch (e: Exception) {}
 
     routing {
-        // --- Full-Feature Model Context Protocol (MCP) Server Endpoint ---
-        mcp("/mcp") {
-            serverInfo = Implementation(name = "pixel9-android-mcp", version = "2.0.0")
-            capabilities = ServerCapabilities(
-                tools = ServerCapabilities.Tools(),
-                resources = ServerCapabilities.Resources()
-            )
+        // --- Standalone JSON-RPC 2.0 MCP Endpoint (/mcp) ---
+        post("/mcp") {
+            try {
+                val req = call.receive<JsonRpcRequest>()
+                val resultJson = when (req.method) {
+                    "initialize" -> {
+                        JsonObject(mapOf(
+                            "protocolVersion" to kotlinx.serialization.json.JsonPrimitive("2024-11-05"),
+                            "serverInfo" to kotlinx.serialization.json.JsonObject(mapOf(
+                                "name" to kotlinx.serialization.json.JsonPrimitive("pixel9-android-mcp"),
+                                "version" to kotlinx.serialization.json.JsonPrimitive("2.0.0")
+                            )),
+                            "capabilities" to kotlinx.serialization.json.JsonObject(mapOf(
+                                "tools" to kotlinx.serialization.json.JsonObject(emptyMap()),
+                                "resources" to kotlinx.serialization.json.JsonObject(emptyMap())
+                            ))
+                        ))
+                    }
+                    "tools/list" -> {
+                        JsonObject(mapOf(
+                            "tools" to kotlinx.serialization.json.JsonArray(listOf(
+                                kotlinx.serialization.json.JsonObject(mapOf("name" to kotlinx.serialization.json.JsonPrimitive("read_workspace_file"), "description" to kotlinx.serialization.json.JsonPrimitive("Read contents of a local file"))),
+                                kotlinx.serialization.json.JsonObject(mapOf("name" to kotlinx.serialization.json.JsonPrimitive("write_workspace_file"), "description" to kotlinx.serialization.json.JsonPrimitive("Write or overwrite a file"))),
+                                kotlinx.serialization.json.JsonObject(mapOf("name" to kotlinx.serialization.json.JsonPrimitive("list_directory"), "description" to kotlinx.serialization.json.JsonPrimitive("List files in directory"))),
+                                kotlinx.serialization.json.JsonObject(mapOf("name" to kotlinx.serialization.json.JsonPrimitive("execute_shell"), "description" to kotlinx.serialization.json.JsonPrimitive("Execute a shell command")))
+                            ))
+                        ))
+                    }
+                    "resources/list" -> {
+                        JsonObject(mapOf(
+                            "resources" to kotlinx.serialization.json.JsonArray(listOf(
+                                kotlinx.serialization.json.JsonObject(mapOf("uri" to kotlinx.serialization.json.JsonPrimitive("workspace://git/status"), "name" to kotlinx.serialization.json.JsonPrimitive("Git Status"))),
+                                kotlinx.serialization.json.JsonObject(mapOf("uri" to kotlinx.serialization.json.JsonPrimitive("system://device/info"), "name" to kotlinx.serialization.json.JsonPrimitive("Device Info")))
+                            ))
+                        ))
+                    }
+                    "resources/read" -> {
+                        val uri = req.params?.get("uri")?.jsonPrimitive?.content ?: ""
+                        val content = when (uri) {
+                            "workspace://git/status" -> ShellSessionManager.executeCommand(0L, "git status")
+                            "system://device/info" -> "Device: Google Pixel 9 (Tensor G4)\nRuntime: Termux / Android Ktor"
+                            else -> "Error: Unknown resource URI"
+                        }
+                        JsonObject(mapOf(
+                            "contents" to kotlinx.serialization.json.JsonArray(listOf(
+                                kotlinx.serialization.json.JsonObject(mapOf(
+                                    "uri" to kotlinx.serialization.json.JsonPrimitive(uri),
+                                    "text" to kotlinx.serialization.json.JsonPrimitive(content)
+                                ))
+                            ))
+                        ))
+                    }
+                    "tools/call" -> {
+                        val toolName = req.params?.get("name")?.jsonPrimitive?.content ?: ""
+                        val arguments = req.params?.get("arguments")?.jsonObject
+                        
+                        val toolOutput = when (toolName) {
+                            "read_workspace_file" -> {
+                                val path = arguments?.get("path")?.jsonPrimitive?.content ?: ""
+                                val target = resolveWorkspaceFile(path)
+                                if (target.exists() && target.canRead()) target.readText().take(5000) else "Error: File not found"
+                            }
+                            "write_workspace_file" -> {
+                                val path = arguments?.get("path")?.jsonPrimitive?.content ?: ""
+                                val content = arguments?.get("content")?.jsonPrimitive?.content ?: ""
+                                val target = resolveWorkspaceFile(path)
+                                target.parentFile?.mkdirs()
+                                target.writeText(content)
+                                "Successfully wrote ${target.absolutePath}"
+                            }
+                            "list_directory" -> {
+                                val path = arguments?.get("path")?.jsonPrimitive?.content ?: "."
+                                val dir = resolveWorkspaceFile(path)
+                                if (dir.exists() && dir.isDirectory) {
+                                    dir.listFiles()?.joinToString("\n") { if (it.isDirectory) "[DIR]  ${it.name}" else "[FILE] ${it.name}" } ?: "Empty directory"
+                                } else "Error: Invalid directory"
+                            }
+                            "execute_shell" -> {
+                                val command = arguments?.get("command")?.jsonPrimitive?.content ?: ""
+                                ShellSessionManager.executeCommand(0L, command)
+                            }
+                            else -> "Error: Unknown tool $toolName"
+                        }
 
-            // 1. RESOURCES: Expose system state & workspace info
-            resource(
-                uri = "workspace://git/status",
-                name = "Git Status",
-                description = "Uncommitted git changes and branch status"
-            ) {
-                val output = ShellSessionManager.executeCommand(0L, "git status")
-                ReadResourceResult(contents = listOf(io.modelcontextprotocol.kotlin.sdk.ResourceContent(uri = "workspace://git/status", text = output)))
-            }
+                        JsonObject(mapOf(
+                            "content" to kotlinx.serialization.json.JsonArray(listOf(
+                                kotlinx.serialization.json.JsonObject(mapOf(
+                                    "type" to kotlinx.serialization.json.JsonPrimitive("text"),
+                                    "text" to kotlinx.serialization.json.JsonPrimitive(toolOutput)
+                                ))
+                            ))
+                        ))
+                    }
+                    else -> throw IllegalArgumentException("Unknown method: ${req.method}")
+                }
 
-            resource(
-                uri = "system://device/info",
-                name = "Device Info",
-                description = "Pixel 9 hardware and runtime specs"
-            ) {
-                val info = "Device: Google Pixel 9 (Tensor G4)\nRuntime: Termux / Android Ktor\nAvailable Models: ${getAvailableModels().map { it.id }}"
-                ReadResourceResult(contents = listOf(io.modelcontextprotocol.kotlin.sdk.ResourceContent(uri = "system://device/info", text = info)))
-            }
-
-            // 2. TOOLS: Full suite of file, shell, and path capabilities
-            tool(
-                name = "read_workspace_file",
-                description = "Read contents of a local file on Termux or Android storage"
-            ) { args: Map<String, Any?> ->
-                val rawPath = args["path"]?.toString() ?: ""
-                val targetFile = resolveWorkspaceFile(rawPath)
-                val content = if (targetFile.exists() && targetFile.canRead()) targetFile.readText().take(5000) else "Error: File not found"
-                CallToolResult(content = listOf(TextContent(text = content)))
-            }
-
-            tool(
-                name = "write_workspace_file",
-                description = "Write or overwrite a file in the workspace"
-            ) { args: Map<String, Any?> ->
-                val rawPath = args["path"]?.toString() ?: ""
-                val content = args["content"]?.toString() ?: ""
-                val targetFile = resolveWorkspaceFile(rawPath)
-                targetFile.parentFile?.mkdirs()
-                targetFile.writeText(content)
-                CallToolResult(content = listOf(TextContent(text = "Successfully wrote ${targetFile.absolutePath}")))
-            }
-
-            tool(
-                name = "list_directory",
-                description = "List files and directories in a given path"
-            ) { args: Map<String, Any?> ->
-                val rawPath = args["path"]?.toString() ?: "."
-                val dir = resolveWorkspaceFile(rawPath)
-                val listing = if (dir.exists() && dir.isDirectory) {
-                    dir.listFiles()?.joinToString("\n") { if (it.isDirectory) "[DIR]  ${it.name}" else "[FILE] ${it.name}" } ?: "Empty directory"
-                } else "Error: Invalid directory"
-                CallToolResult(content = listOf(TextContent(text = listing)))
-            }
-
-            tool(
-                name = "execute_shell",
-                description = "Execute a shell command inside the Termux environment context"
-            ) { args: Map<String, Any?> ->
-                val command = args["command"]?.toString() ?: ""
-                val output = ShellSessionManager.executeCommand(0L, command)
-                CallToolResult(content = listOf(TextContent(text = output)))
+                call.respond(JsonRpcResponse(id = req.id, result = resultJson))
+            } catch (e: Exception) {
+                call.respond(JsonRpcResponse(error = JsonRpcError(code = -32603, message = e.localizedMessage ?: "Internal error")))
             }
         }
 
         // --- Standard Landing & OpenAI Endpoints ---
         get("/") {
-            call.respondText("Ai-agent Local OpenAI Server & Full MCP Gateway Online", ContentType.Text.Plain)
+            call.respondText("Ai-agent Local OpenAI Server & Standalone JSON-RPC MCP Online", ContentType.Text.Plain)
         }
 
         get("/health") {
