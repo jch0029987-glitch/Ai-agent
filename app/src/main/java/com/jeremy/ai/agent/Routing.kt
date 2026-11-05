@@ -3,7 +3,9 @@ package com.jeremy.ai.backend
 import com.jeremy.ai.agent.AgentBridge
 import com.jeremy.ai.agent.BuildConfig
 import io.ktor.http.*
+import io.ktor.serialization.kotlinx.json.*
 import io.ktor.server.application.*
+import io.ktor.server.plugins.contentnegotiation.*
 import io.ktor.server.request.*
 import io.ktor.server.response.*
 import io.ktor.server.routing.*
@@ -295,8 +297,21 @@ private fun answerCallbackQuery(botToken: String, callbackQueryId: String): Int?
 }
 
 // ==========================================
-// 7. Ktor Routing & Standalone JSON-RPC MCP Server
+// 7. Ktor Module & Routing Setup
 // ==========================================
+
+fun Application.configureServer() {
+    // Install ContentNegotiation to fix 406 Not Acceptable errors on JSON payloads
+    install(ContentNegotiation) {
+        json(Json {
+            ignoreUnknownKeys = true
+            isLenient = true
+            prettyPrint = true
+        })
+    }
+
+    configureRouting()
+}
 
 fun Application.configureRouting() {
     val telegramBotToken = BuildConfig.TELEGRAM_BOT_TOKEN
