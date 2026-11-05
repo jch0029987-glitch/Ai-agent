@@ -135,6 +135,6 @@ dependencies {
     androidTestImplementation("androidx.compose.ui:ui-test-junit4")
     debugImplementation("androidx.compose.ui:ui-tooling")
     debugImplementation("androidx.compose.ui:ui-test-manifest")
-    implementation("io.modelcontextprotocol:kotlin-sdk:1.0.0") // Use the latest stable version
+    implementation("io.modelcontextprotocol:kotlin-sdk:0.16.0") // Use the latest stable version
 
 }
