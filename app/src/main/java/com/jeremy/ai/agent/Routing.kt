@@ -18,9 +18,6 @@ import io.modelcontextprotocol.kotlin.sdk.ServerCapabilities
 import io.modelcontextprotocol.kotlin.sdk.TextContent
 import io.modelcontextprotocol.kotlin.sdk.CallToolResult
 import io.modelcontextprotocol.kotlin.sdk.ReadResourceResult
-import io.modelcontextprotocol.kotlin.sdk.GetPromptResult
-import io.modelcontextprotocol.kotlin.sdk.PromptMessage
-import io.modelcontextprotocol.kotlin.sdk.Role
 
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.GlobalScope
@@ -295,8 +292,7 @@ fun Application.configureRouting() {
             serverInfo = Implementation(name = "pixel9-android-mcp", version = "2.0.0")
             capabilities = ServerCapabilities(
                 tools = ServerCapabilities.Tools(),
-                resources = ServerCapabilities.Resources(),
-                prompts = ServerCapabilities.Prompts()
+                resources = ServerCapabilities.Resources()
             )
 
             // 1. RESOURCES: Expose system state & workspace info
@@ -308,7 +304,7 @@ fun Application.configureRouting() {
                 val output = ShellSessionManager.executeCommand(0L, "git status")
                 ReadResourceResult(contents = listOf(io.modelcontextprotocol.kotlin.sdk.ResourceContent(uri = "workspace://git/status", text = output)))
             }
-s
+
             resource(
                 uri = "system://device/info",
                 name = "Device Info",
@@ -318,12 +314,13 @@ s
                 ReadResourceResult(contents = listOf(io.modelcontextprotocol.kotlin.sdk.ResourceContent(uri = "system://device/info", text = info)))
             }
 
-            // 2. TOOLS: Full suite of file, shell, and patch capabilities
+            // 2. TOOLS: Full suite of file, shell, and path capabilities
             tool(
                 name = "read_workspace_file",
                 description = "Read contents of a local file on Termux or Android storage"
-            ) { args ->
-                val targetFile = resolveWorkspaceFile(args["path"]?.toString() ?: "")
+            ) { args: Map<String, Any?> ->
+                val rawPath = args["path"]?.toString() ?: ""
+                val targetFile = resolveWorkspaceFile(rawPath)
                 val content = if (targetFile.exists() && targetFile.canRead()) targetFile.readText().take(5000) else "Error: File not found"
                 CallToolResult(content = listOf(TextContent(text = content)))
             }
@@ -331,9 +328,10 @@ s
             tool(
                 name = "write_workspace_file",
                 description = "Write or overwrite a file in the workspace"
-            ) { args ->
-                val targetFile = resolveWorkspaceFile(args["path"]?.toString() ?: "")
+            ) { args: Map<String, Any?> ->
+                val rawPath = args["path"]?.toString() ?: ""
                 val content = args["content"]?.toString() ?: ""
+                val targetFile = resolveWorkspaceFile(rawPath)
                 targetFile.parentFile?.mkdirs()
                 targetFile.writeText(content)
                 CallToolResult(content = listOf(TextContent(text = "Successfully wrote ${targetFile.absolutePath}")))
@@ -342,8 +340,9 @@ s
             tool(
                 name = "list_directory",
                 description = "List files and directories in a given path"
-            ) { args ->
-                val dir = resolveWorkspaceFile(args["path"]?.toString() ?: ".")
+            ) { args: Map<String, Any?> ->
+                val rawPath = args["path"]?.toString() ?: "."
+                val dir = resolveWorkspaceFile(rawPath)
                 val listing = if (dir.exists() && dir.isDirectory) {
                     dir.listFiles()?.joinToString("\n") { if (it.isDirectory) "[DIR]  ${it.name}" else "[FILE] ${it.name}" } ?: "Empty directory"
                 } else "Error: Invalid directory"
@@ -353,24 +352,10 @@ s
             tool(
                 name = "execute_shell",
                 description = "Execute a shell command inside the Termux environment context"
-            ) { args ->
+            ) { args: Map<String, Any?> ->
                 val command = args["command"]?.toString() ?: ""
                 val output = ShellSessionManager.executeCommand(0L, command)
                 CallToolResult(content = listOf(TextContent(text = output)))
-            }
-
-            // 3. PROMPTS: Reusable expert prompt templates
-            prompt(
-                name = "code_review",
-                description = "Review code snippet for bugs, performance bottlenecks, and best practices"
-            ) { args ->
-                val code = args["code"]?.toString() ?: ""
-                GetPromptResult(
-                    description = "Code Review Prompt",
-                    messages = listOf(
-                        PromptMessage(role = Role.user, content = TextContent(text = "Please perform an expert code review on the following snippet:\n\n```kotlin\n$code\n```"))
-                    )
-                )
             }
         }
 
