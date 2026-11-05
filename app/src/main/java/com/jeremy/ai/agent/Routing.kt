@@ -1,4 +1,4 @@
-package com.jeremy.ai.backend
+package com.jeremy.ai.agent.backend
 
 import com.jeremy.ai.agent.AgentBridge
 import com.jeremy.ai.agent.BuildConfig
@@ -168,6 +168,8 @@ object ChatSessionManager {
 }
 
 object ShellSessionManager {
+    lateinit var appContext: Context
+
     private val workingDirectories = ConcurrentHashMap<Long, File>()
     private val pendingResults = ConcurrentHashMap<Int, CompletableFuture<String>>()
     private val atomicId = AtomicInteger(0)
@@ -415,7 +417,7 @@ fun Application.configureRouting() {
                     "resources/read" -> {
                         val uri = req.params?.get("uri")?.jsonPrimitive?.content ?: ""
                         val content = when (uri) {
-                            "workspace://git/status" -> ShellSessionManager.executeCommand(application, 0L, "git status")
+                            "workspace://git/status" -> ShellSessionManager.executeCommand(ShellSessionManager.appContext, 0L, "git status")
                             "system://device/info" -> "Device: Google Pixel 9 (Tensor G4)\nRuntime: Termux / Android Ktor"
                             else -> "Error: Unknown resource URI"
                         }
@@ -455,7 +457,7 @@ fun Application.configureRouting() {
                             }
                             "execute_shell" -> {
                                 val command = arguments?.get("command")?.jsonPrimitive?.content ?: ""
-                                ShellSessionManager.executeCommand(application, 0L, command)
+                                ShellSessionManager.executeCommand(ShellSessionManager.appContext, 0L, command)
                             }
                             else -> "Error: Unknown tool $toolName"
                         }
@@ -578,7 +580,7 @@ fun Application.configureRouting() {
                     if (text.startsWith("/shell ")) {
                         val cmd = text.removePrefix("/shell").trim()
                         val statusId = sendTelegramMessage(telegramBotToken, chatId, "💻 *Executing Shell:*\n`$cmd`")
-                        val result = ShellSessionManager.executeCommand(application, chatId, cmd)
+                        val result = ShellSessionManager.executeCommand(ShellSessionManager.appContext, chatId, cmd)
                         if (statusId != null) editTelegramMessage(telegramBotToken, chatId, statusId, "💻 *Shell Output:*\n```bash\n$result\n```")
                         call.respond(HttpStatusCode.OK)
                         return@post
