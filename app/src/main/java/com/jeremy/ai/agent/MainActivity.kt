@@ -21,14 +21,12 @@ import androidx.compose.ui.Modifier
 import androidx.core.content.ContextCompat
 import com.jeremy.ai.agent.ui.AgentChatScreen
 import com.jeremy.ai.backend.configureRouting
-import io.ktor.serialization.kotlinx.json.*
 import io.ktor.server.application.install
 import io.ktor.server.engine.EmbeddedServer
 import io.ktor.server.engine.embeddedServer
 import io.ktor.server.netty.Netty
-import io.ktor.server.plugins.contentnegotiation.*
+import io.ktor.server.sse.SSE
 import io.ktor.server.websocket.*
-import kotlinx.serialization.json.Json
 import kotlin.time.Duration.Companion.seconds
 
 class MainActivity : ComponentActivity() {
@@ -96,7 +94,7 @@ class MainActivity : ComponentActivity() {
         try {
             if (ktorServer == null) {
                 ktorServer = embeddedServer(Netty, port = 8080) {
-                    // 1. Install WebSockets plugin to support real-time token streaming routes
+                    // 1. Install WebSockets plugin for real-time token streaming routes
                     install(WebSockets) {
                         pingPeriod = 15.seconds
                         timeout = 15.seconds
@@ -104,19 +102,16 @@ class MainActivity : ComponentActivity() {
                         masking = false
                     }
 
-                    // 2. Install ContentNegotiation with kotlinx.serialization JSON support
-                    install(ContentNegotiation) {
-                        json(Json {
-                            prettyPrint = true
-                            isLenient = true
-                            ignoreUnknownKeys = true
-                        })
-                    }
+                    // 2. Install Server-Sent Events (SSE) plugin required for official MCP transport
+                    install(SSE)
 
-                    // 3. Register application routing endpoints
+                    // NOTE: Global ContentNegotiation is intentionally omitted here 
+                    // to prevent payload parsing collisions with the official MCP Kotlin SDK.
+
+                    // 3. Register application routing endpoints (including /mcp)
                     configureRouting()
                 }.start(wait = false)
-                Log.i("MainActivity", "Ktor Netty server successfully started on port 8080")
+                Log.i("MainActivity", "Ktor Netty server successfully started on port 8080 with MCP & SSE support")
             }
         } catch (e: Exception) {
             Log.e("MainActivity", "Failed to start embedded Ktor server", e)

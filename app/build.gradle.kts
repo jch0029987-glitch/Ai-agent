@@ -123,7 +123,7 @@ dependencies {
     implementation("io.ktor:ktor-server-call-logging-jvm:3.0.0")
     implementation("io.ktor:ktor-server-websockets:3.0.0")
     implementation("io.ktor:ktor-server-cors:3.0.0")
-
+    implementation("io.ktor:ktor-server-sse:3.0.0")
     // Kotlinx Serialization
     implementation("io.ktor:ktor-serialization-kotlinx-json:3.0.0")
     implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.7.3")
@@ -135,4 +135,6 @@ dependencies {
     androidTestImplementation("androidx.compose.ui:ui-test-junit4")
     debugImplementation("androidx.compose.ui:ui-tooling")
     debugImplementation("androidx.compose.ui:ui-test-manifest")
+    implementation("io.modelcontextprotocol:kotlin-sdk:1.0.0") // Use the latest stable version
+
 }

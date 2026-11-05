@@ -9,6 +9,19 @@ import io.ktor.server.response.*
 import io.ktor.server.routing.*
 import io.ktor.server.websocket.*
 import io.ktor.websocket.*
+import io.ktor.sse.*
+
+// Official Model Context Protocol (MCP) SDK Ktor server integrations
+import io.modelcontextprotocol.kotlin.sdk.server.mcp
+import io.modelcontextprotocol.kotlin.sdk.Implementation
+import io.modelcontextprotocol.kotlin.sdk.ServerCapabilities
+import io.modelcontextprotocol.kotlin.sdk.TextContent
+import io.modelcontextprotocol.kotlin.sdk.CallToolResult
+import io.modelcontextprotocol.kotlin.sdk.ReadResourceResult
+import io.modelcontextprotocol.kotlin.sdk.GetPromptResult
+import io.modelcontextprotocol.kotlin.sdk.PromptMessage
+import io.modelcontextprotocol.kotlin.sdk.Role
+
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.GlobalScope
 import kotlinx.coroutines.delay
@@ -28,10 +41,7 @@ import java.util.concurrent.CompletableFuture
 // ==========================================
 
 @Serializable
-data class OpenAIMessage(
-    val role: String, // "system", "user", or "assistant"
-    val content: String
-)
+data class OpenAIMessage(val role: String, val content: String)
 
 @Serializable
 data class OpenAIChatRequest(
@@ -51,10 +61,7 @@ data class OpenAIChoice(
 )
 
 @Serializable
-data class OpenAIDelta(
-    val role: String? = null,
-    val content: String? = null
-)
+data class OpenAIDelta(val role: String? = null, val content: String? = null)
 
 @Serializable
 data class OpenAIChatResponse(
@@ -74,10 +81,7 @@ data class OpenAIModelObject(
 )
 
 @Serializable
-data class OpenAIModelListResponse(
-    val `object`: String = "list",
-    val data: List<OpenAIModelObject>
-)
+data class OpenAIModelListResponse(val `object`: String = "list", val data: List<OpenAIModelObject>)
 
 // ==========================================
 // 2. Legacy / Native Client Models
@@ -86,7 +90,7 @@ data class OpenAIModelListResponse(
 @Serializable
 data class ClientMessage(
     val clientId: String = "default-client",
-    val deviceType: String? = "phone", // "web", "phone", or "termux-cli"
+    val deviceType: String? = "phone",
     val prompt: String = "",
     val cwd: String? = null,
     val gitContext: String? = null,
@@ -95,10 +99,7 @@ data class ClientMessage(
 )
 
 @Serializable
-data class ServerResponse(
-    val token: String,
-    val isFinished: Boolean
-)
+data class ServerResponse(val token: String, val isFinished: Boolean)
 
 // ==========================================
 // 3. Telegram Bot DTO Models
@@ -112,27 +113,16 @@ data class TelegramUpdate(
 )
 
 @Serializable
-data class TelegramMessage(
-    @SerialName("message_id") val messageId: Long,
-    val chat: TelegramChat,
-    val text: String? = null
-)
+data class TelegramMessage(@SerialName("message_id") val messageId: Long, val chat: TelegramChat, val text: String? = null)
 
 @Serializable
-data class TelegramChat(
-    val id: Long,
-    val type: String
-)
+data class TelegramChat(val id: Long, val type: String)
 
 @Serializable
-data class TelegramCallbackQuery(
-    val id: String,
-    val data: String? = null,
-    val message: TelegramMessage? = null
-)
+data class TelegramCallbackQuery(val id: String, val data: String? = null, val message: TelegramMessage? = null)
 
 // ==========================================
-// 4. Approval, Session & Cron Stores
+// 4. Stores & Shell Manager
 // ==========================================
 
 object TelegramApprovalStore {
@@ -141,25 +131,16 @@ object TelegramApprovalStore {
 
 object ChatSessionManager {
     private val sessions = ConcurrentHashMap<String, MutableList<Pair<String, String>>>()
-
-    fun getHistory(clientId: String): MutableList<Pair<String, String>> {
-        return sessions.getOrPut(clientId) { mutableListOf() }
-    }
-
-    fun clearSession(clientId: String) {
-        sessions.remove(clientId)
-    }
-
-    fun appendMessage(clientId: String, role: String, content: String) {
-        getHistory(clientId).add(Pair(role, content))
-    }
+    fun getHistory(clientId: String) = sessions.getOrPut(clientId) { mutableListOf() }
+    fun clearSession(clientId: String) { sessions.remove(clientId) }
+    fun appendMessage(clientId: String, role: String, content: String) { getHistory(clientId).add(Pair(role, content)) }
 }
 
 object ShellSessionManager {
     private val workingDirectories = ConcurrentHashMap<Long, File>()
 
     fun executeCommand(chatId: Long, command: String): String {
-        val currentDir = workingDirectories.getOrPut(chatId) { Environment.getExternalStorageDirectory() }
+        val currentDir = workingDirectories.getOrPut(chatId) { File("/data/data/com.termux/files/home") }
         
         if (command.trim().startsWith("cd ")) {
             val targetDir = command.trim().removePrefix("cd").trim()
@@ -180,7 +161,7 @@ object ShellSessionManager {
             
             val output = process.inputStream.bufferedReader().use { it.readText() }
             process.waitFor()
-            if (output.isBlank()) "Command executed successfully with no output." else output.take(3000)
+            if (output.isBlank()) "Command executed successfully with no output." else output.take(4000)
         } catch (e: Exception) {
             "Shell execution error: ${e.localizedMessage}"
         }
@@ -188,20 +169,11 @@ object ShellSessionManager {
 }
 
 @Serializable
-data class ScheduledTask(
-    val taskId: String,
-    val chatId: Long,
-    val prompt: String,
-    val executeAtTimestamp: Long
-)
+data class ScheduledTask(val taskId: String, val chatId: Long, val prompt: String, val executeAtTimestamp: Long)
 
 object CronJobManager {
     private val scheduledTasks = Collections.synchronizedList(mutableListOf<ScheduledTask>())
-
-    fun addTask(task: ScheduledTask) {
-        scheduledTasks.add(task)
-    }
-
+    fun addTask(task: ScheduledTask) { scheduledTasks.add(task) }
     fun startDispatcher(botToken: String) {
         GlobalScope.launch(Dispatchers.IO) {
             while (true) {
@@ -212,64 +184,53 @@ object CronJobManager {
                     if (now >= task.executeAtTimestamp) {
                         try {
                             val statusMsgId = sendTelegramMessage(botToken, task.chatId, "⏰ *Cron Reminder Triggered:*\n`${task.prompt}`")
-                            val response = AgentBridge.processPromptWithTelegramUpdates(
-                                prompt = task.prompt,
-                                botToken = botToken,
-                                chatId = task.chatId,
-                                messageId = statusMsgId ?: 0L
-                            )
+                            val response = AgentBridge.processPromptWithTelegramUpdates(prompt = task.prompt, botToken = botToken, chatId = task.chatId, messageId = statusMsgId ?: 0L)
                             if (statusMsgId != null) {
                                 editTelegramMessage(botToken, task.chatId, statusMsgId, "✅ *Cron Task Completed*\n\n$response")
                             }
-                        } catch (e: Exception) {
-                            // Safe error handling for cron tasks
-                        }
+                        } catch (e: Exception) {}
                         iterator.remove()
                     }
                 }
-                delay(10000L) // Check every 10 seconds
+                delay(10000L)
             }
         }
     }
 }
 
 // ==========================================
-// 5. Utility: Scan Local Model Files & Robust Telegram API Helpers
+// 5. Utilities & Path Resolution
 // ==========================================
 
 fun getAvailableModels(): List<OpenAIModelObject> {
     val modelList = mutableListOf<OpenAIModelObject>()
     try {
         val externalStorage = Environment.getExternalStorageDirectory()
-        val modelsDir = File(externalStorage, "Download/models")
-        val downloadDir = File(externalStorage, "Download")
-
-        listOf(modelsDir, downloadDir).forEach { dir ->
+        listOf(File(externalStorage, "Download/models"), File(externalStorage, "Download")).forEach { dir ->
             if (dir.exists() && dir.isDirectory) {
-                dir.listFiles { file ->
-                    file.isFile && (file.name.endsWith(".litertlm", ignoreCase = true) || file.name.endsWith(".task", ignoreCase = true))
-                }?.forEach { modelFile ->
-                    modelList.add(OpenAIModelObject(id = modelFile.name))
-                }
+                dir.listFiles { file -> file.isFile && (file.name.endsWith(".litertlm", true) || file.name.endsWith(".task", true)) }
+                    ?.forEach { modelList.add(OpenAIModelObject(id = modelFile.name)) }
             }
         }
-    } catch (e: Exception) {
-        // Fallback default
-    }
-
-    if (modelList.isEmpty()) {
-        modelList.add(OpenAIModelObject(id = "gemma-4-abliterated"))
-    }
+    } catch (e: Exception) {}
+    if (modelList.isEmpty()) modelList.add(OpenAIModelObject(id = "gemma-4-abliterated"))
     return modelList
+}
+
+private fun resolveWorkspaceFile(rawPath: String): File {
+    val trimmed = rawPath.trim()
+    return when {
+        trimmed.startsWith("/") -> File(trimmed)
+        trimmed.startsWith("termux:") -> File("/data/data/com.termux/files/home/", trimmed.removePrefix("termux:"))
+        else -> File("/data/data/com.termux/files/home/", trimmed)
+    }
 }
 
 private fun <T> executeTelegramRequest(block: () -> T?): T? {
     var maxRetries = 3
     var delayMs = 1000L
     while (maxRetries > 0) {
-        try {
-            return block()
-        } catch (e: Exception) {
+        try { return block() } catch (e: Exception) {
             maxRetries--
             if (maxRetries == 0) break
             try { Thread.sleep(delayMs) } catch (_: Exception) {}
@@ -279,127 +240,149 @@ private fun <T> executeTelegramRequest(block: () -> T?): T? {
     return null
 }
 
-private fun sendTelegramMessage(botToken: String, chatId: Long, text: String): Long? {
-    return executeTelegramRequest {
-        val url = java.net.URL("https://api.telegram.org/bot$botToken/sendMessage")
-        val conn = url.openConnection() as java.net.HttpURLConnection
-        conn.requestMethod = "POST"
-        conn.setRequestProperty("Content-Type", "application/json")
-        conn.doOutput = true
-
-        val escapedText = text.replace("\"", "\\\"").replace("\n", "\\n")
-        val payload = "{\"chat_id\": $chatId, \"text\": \"$escapedText\", \"parse_mode\": \"Markdown\"}"
-        conn.outputStream.write(payload.toByteArray())
-
-        if (conn.responseCode == 200) {
-            val responseStr = conn.inputStream.bufferedReader().use { it.readText() }
-            val regex = "\"message_id\":(\\d+)".toRegex()
-            regex.find(responseStr)?.groupValues?.get(1)?.toLongOrNull()
-        } else if (conn.responseCode == 429) {
-            throw java.io.IOException("Rate limited (429)")
-        } else {
-            null
-        }
-    }
+private fun sendTelegramMessage(botToken: String, chatId: Long, text: String): Long? = executeTelegramRequest {
+    val url = java.net.URL("https://api.telegram.org/bot$botToken/sendMessage")
+    val conn = url.openConnection() as java.net.HttpURLConnection
+    conn.requestMethod = "POST"
+    conn.setRequestProperty("Content-Type", "application/json")
+    conn.doOutput = true
+    val payload = "{\"chat_id\": $chatId, \"text\": \"${text.replace("\"", "\\\"").replace("\n", "\\n")}\", \"parse_mode\": \"Markdown\"}"
+    conn.outputStream.write(payload.toByteArray())
+    if (conn.responseCode == 200) {
+        val responseStr = conn.inputStream.bufferedReader().use { it.readText() }
+        "\"message_id\":(\\d+)".toRegex().find(responseStr)?.groupValues?.get(1)?.toLongOrNull()
+    } else if (conn.responseCode == 429) throw java.io.IOException("Rate limited") else null
 }
 
-private fun editTelegramMessage(botToken: String, chatId: Long, messageId: Long, newText: String): Int? {
-    return executeTelegramRequest {
-        val url = java.net.URL("https://api.telegram.org/bot$botToken/editMessageText")
-        val conn = url.openConnection() as java.net.HttpURLConnection
-        conn.requestMethod = "POST"
-        conn.setRequestProperty("Content-Type", "application/json")
-        conn.doOutput = true
-
-        val escapedText = newText.replace("\"", "\\\"").replace("\n", "\\n")
-        val payload = "{\"chat_id\": $chatId, \"message_id\": $messageId, \"text\": \"$escapedText\", \"parse_mode\": \"Markdown\"}"
-        conn.outputStream.write(payload.toByteArray())
-        if (conn.responseCode == 429) throw java.io.IOException("Rate limited")
-        conn.responseCode
-    }
+private fun editTelegramMessage(botToken: String, chatId: Long, messageId: Long, newText: String): Int? = executeTelegramRequest {
+    val url = java.net.URL("https://api.telegram.org/bot$botToken/editMessageText")
+    val conn = url.openConnection() as java.net.HttpURLConnection
+    conn.requestMethod = "POST"
+    conn.setRequestProperty("Content-Type", "application/json")
+    conn.doOutput = true
+    val payload = "{\"chat_id\": $chatId, \"message_id\": $messageId, \"text\": \"${newText.replace("\"", "\\\"").replace("\n", "\\n")}\", \"parse_mode\": \"Markdown\"}"
+    conn.outputStream.write(payload.toByteArray())
+    if (conn.responseCode == 429) throw java.io.IOException("Rate limited")
+    conn.responseCode
 }
 
-private fun answerCallbackQuery(botToken: String, callbackQueryId: String): Int? {
-    return executeTelegramRequest {
-        val url = java.net.URL("https://api.telegram.org/bot$botToken/answerCallbackQuery")
-        val conn = url.openConnection() as java.net.HttpURLConnection
-        conn.requestMethod = "POST"
-        conn.setRequestProperty("Content-Type", "application/json")
-        conn.doOutput = true
-        val payload = "{\"callback_query_id\": \"$callbackQueryId\"}"
-        conn.outputStream.write(payload.toByteArray())
-        if (conn.responseCode == 429) throw java.io.IOException("Rate limited")
-        conn.responseCode
-    }
-}
-
-private fun sendTelegramDocument(botToken: String, chatId: Long, file: File, caption: String): Boolean {
-    return executeTelegramRequest {
-        val boundary = "Boundary-" + System.currentTimeMillis()
-        val url = java.net.URL("https://api.telegram.org/bot$botToken/sendDocument")
-        val conn = url.openConnection() as java.net.HttpURLConnection
-        conn.requestMethod = "POST"
-        conn.setRequestProperty("Content-Type", "multipart/form-data; boundary=$boundary")
-        conn.doOutput = true
-
-        conn.outputStream.use { outputStream ->
-            outputStream.write("--$boundary\r\n".toByteArray())
-            outputStream.write("Content-Disposition: form-data; name=\"chat_id\"\r\n\r\n".toByteArray())
-            outputStream.write("$chatId\r\n".toByteArray())
-
-            outputStream.write("--$boundary\r\n".toByteArray())
-            outputStream.write("Content-Disposition: form-data; name=\"caption\"\r\n\r\n".toByteArray())
-            outputStream.write("$caption\r\n".toByteArray())
-
-            outputStream.write("--$boundary\r\n".toByteArray())
-            outputStream.write("Content-Disposition: form-data; name=\"document\"; filename=\"${file.name}\"\r\n".toByteArray())
-            outputStream.write("Content-Type: application/octet-stream\r\n\r\n".toByteArray())
-            file.inputStream().use { it.copyTo(outputStream) }
-            outputStream.write("\r\n".toByteArray())
-
-            outputStream.write("--$boundary--\r\n".toByteArray())
-        }
-        if (conn.responseCode == 429) throw java.io.IOException("Rate limited")
-        conn.responseCode == 200
-    } ?: false
+private fun answerCallbackQuery(botToken: String, callbackQueryId: String): Int? = executeTelegramRequest {
+    val url = java.net.URL("https://api.telegram.org/bot$botToken/answerCallbackQuery")
+    val conn = url.openConnection() as java.net.HttpURLConnection
+    conn.requestMethod = "POST"
+    conn.setRequestProperty("Content-Type", "application/json")
+    conn.doOutput = true
+    conn.outputStream.write("{\"callback_query_id\": \"$callbackQueryId\"}".toByteArray())
+    if (conn.responseCode == 429) throw java.io.IOException("Rate limited")
+    conn.responseCode
 }
 
 // ==========================================
-// 6. Ktor Routing Configuration
+// 6. Ktor Routing & Full-Feature MCP Server
 // ==========================================
 
 fun Application.configureRouting() {
+    install(SSE)
+
     val activeConnections = Collections.synchronizedSet(hashSetOf<WebSocketSession>())
     val telegramBotToken = BuildConfig.TELEGRAM_BOT_TOKEN
 
-    // Start background cronjob dispatcher daemon
-    try {
-        CronJobManager.startDispatcher(telegramBotToken)
-    } catch (e: Exception) {
-        // Safe startup guard
-    }
+    try { CronJobManager.startDispatcher(telegramBotToken) } catch (e: Exception) {}
 
     routing {
-        // --- Root Landing & Health Endpoints ---
-        get("/") {
-            call.respondText(
-                "Ai-agent Local OpenAI Server is Online\n" +
-                        "Endpoints:\n" +
-                        "- GET /health\n" +
-                        "- GET /v1/models\n" +
-                        "- POST /v1/chat/completions (OpenAI Compatible)\n" +
-                        "- POST /api/agent/stream (Termux SSE)\n" +
-                        "- POST /api/telegram/webhook (Telegram Bot)\n" +
-                        "- WS /ws/agent",
-                ContentType.Text.Plain
+        // --- Full-Feature Model Context Protocol (MCP) Server Endpoint ---
+        mcp("/mcp") {
+            serverInfo = Implementation(name = "pixel9-android-mcp", version = "2.0.0")
+            capabilities = ServerCapabilities(
+                tools = ServerCapabilities.Tools(),
+                resources = ServerCapabilities.Resources(),
+                prompts = ServerCapabilities.Prompts()
             )
+
+            // 1. RESOURCES: Expose system state & workspace info
+            resource(
+                uri = "workspace://git/status",
+                name = "Git Status",
+                description = "Uncommitted git changes and branch status"
+            ) {
+                val output = ShellSessionManager.executeCommand(0L, "git status")
+                ReadResourceResult(contents = listOf(io.modelcontextprotocol.kotlin.sdk.ResourceContent(uri = "workspace://git/status", text = output)))
+            }
+s
+            resource(
+                uri = "system://device/info",
+                name = "Device Info",
+                description = "Pixel 9 hardware and runtime specs"
+            ) {
+                val info = "Device: Google Pixel 9 (Tensor G4)\nRuntime: Termux / Android Ktor\nAvailable Models: ${getAvailableModels().map { it.id }}"
+                ReadResourceResult(contents = listOf(io.modelcontextprotocol.kotlin.sdk.ResourceContent(uri = "system://device/info", text = info)))
+            }
+
+            // 2. TOOLS: Full suite of file, shell, and patch capabilities
+            tool(
+                name = "read_workspace_file",
+                description = "Read contents of a local file on Termux or Android storage"
+            ) { args ->
+                val targetFile = resolveWorkspaceFile(args["path"]?.toString() ?: "")
+                val content = if (targetFile.exists() && targetFile.canRead()) targetFile.readText().take(5000) else "Error: File not found"
+                CallToolResult(content = listOf(TextContent(text = content)))
+            }
+
+            tool(
+                name = "write_workspace_file",
+                description = "Write or overwrite a file in the workspace"
+            ) { args ->
+                val targetFile = resolveWorkspaceFile(args["path"]?.toString() ?: "")
+                val content = args["content"]?.toString() ?: ""
+                targetFile.parentFile?.mkdirs()
+                targetFile.writeText(content)
+                CallToolResult(content = listOf(TextContent(text = "Successfully wrote ${targetFile.absolutePath}")))
+            }
+
+            tool(
+                name = "list_directory",
+                description = "List files and directories in a given path"
+            ) { args ->
+                val dir = resolveWorkspaceFile(args["path"]?.toString() ?: ".")
+                val listing = if (dir.exists() && dir.isDirectory) {
+                    dir.listFiles()?.joinToString("\n") { if (it.isDirectory) "[DIR]  ${it.name}" else "[FILE] ${it.name}" } ?: "Empty directory"
+                } else "Error: Invalid directory"
+                CallToolResult(content = listOf(TextContent(text = listing)))
+            }
+
+            tool(
+                name = "execute_shell",
+                description = "Execute a shell command inside the Termux environment context"
+            ) { args ->
+                val command = args["command"]?.toString() ?: ""
+                val output = ShellSessionManager.executeCommand(0L, command)
+                CallToolResult(content = listOf(TextContent(text = output)))
+            }
+
+            // 3. PROMPTS: Reusable expert prompt templates
+            prompt(
+                name = "code_review",
+                description = "Review code snippet for bugs, performance bottlenecks, and best practices"
+            ) { args ->
+                val code = args["code"]?.toString() ?: ""
+                GetPromptResult(
+                    description = "Code Review Prompt",
+                    messages = listOf(
+                        PromptMessage(role = Role.user, content = TextContent(text = "Please perform an expert code review on the following snippet:\n\n```kotlin\n$code\n```"))
+                    )
+                )
+            }
+        }
+
+        // --- Standard Landing & OpenAI Endpoints ---
+        get("/") {
+            call.respondText("Ai-agent Local OpenAI Server & Full MCP Gateway Online", ContentType.Text.Plain)
         }
 
         get("/health") {
             call.respond(mapOf("status" to "healthy", "service" to "agent-backend-gateway"))
         }
 
-        // --- OpenAI Standard API Endpoints ---
         get("/v1/models") {
             call.respond(OpenAIModelListResponse(data = getAvailableModels()))
         }
@@ -412,11 +395,7 @@ fun Application.configureRouting() {
 
                 val fullPrompt = buildString {
                     for (msg in request.messages) {
-                        val roleLabel = when (msg.role.lowercase()) {
-                            "system" -> "System"
-                            "assistant" -> "Assistant"
-                            else -> "User"
-                        }
+                        val roleLabel = when (msg.role.lowercase()) { "system" -> "System"; "assistant" -> "Assistant"; else -> "User" }
                         append("$roleLabel: ${msg.content}\n")
                     }
                     append("Assistant:")
@@ -426,164 +405,58 @@ fun Application.configureRouting() {
 
                 if (request.stream == true) {
                     call.respondTextWriter(contentType = ContentType.Text.EventStream) {
-                        val fullResponseAccumulator = StringBuilder()
-
+                        val fullAcc = StringBuilder()
                         withContext(Dispatchers.Default) {
                             AgentBridge.processPrompt(fullPrompt) { token ->
-                                fullResponseAccumulator.append(token)
-                                val chunk = OpenAIChatResponse(
-                                    id = reqId,
-                                    model = requestedModel,
-                                    `object` = "chat.completion.chunk",
-                                    choices = listOf(
-                                        OpenAIChoice(
-                                            index = 0,
-                                            delta = OpenAIDelta(content = token),
-                                            finishReason = null
-                                        )
-                                    )
-                                )
-                                val jsonChunk = Json.encodeToString(OpenAIChatResponse.serializer(), chunk)
-                                write("data: $jsonChunk\n\n")
+                                fullAcc.append(token)
+                                val chunk = OpenAIChatResponse(id = reqId, model = requestedModel, `object` = "chat.completion.chunk", choices = listOf(OpenAIChoice(index = 0, delta = OpenAIDelta(content = token))))
+                                write("data: ${Json.encodeToString(OpenAIChatResponse.serializer(), chunk)}\n\n")
                                 flush()
                             }
                         }
-
-                        val doneChunk = OpenAIChatResponse(
-                            id = reqId,
-                            model = requestedModel,
-                            `object` = "chat.completion.chunk",
-                            choices = listOf(
-                                OpenAIChoice(
-                                    index = 0,
-                                    delta = OpenAIDelta(),
-                                    finishReason = "stop"
-                                )
-                            )
-                        )
+                        val doneChunk = OpenAIChatResponse(id = reqId, model = requestedModel, `object` = "chat.completion.chunk", choices = listOf(OpenAIChoice(index = 0, delta = OpenAIDelta(), finishReason = "stop")))
                         write("data: ${Json.encodeToString(OpenAIChatResponse.serializer(), doneChunk)}\n\n")
                         write("data: [DONE]\n\n")
                         flush()
-
                         val clientId = request.user ?: "openai-client"
                         ChatSessionManager.appendMessage(clientId, "User", lastUserMessage)
-                        ChatSessionManager.appendMessage(clientId, "Assistant", fullResponseAccumulator.toString().trim())
+                        ChatSessionManager.appendMessage(clientId, "Assistant", fullAcc.toString().trim())
                     }
                 } else {
-                    val responseAccumulator = StringBuilder()
-
-                    withContext(Dispatchers.Default) {
-                        AgentBridge.processPrompt(fullPrompt) { token ->
-                            responseAccumulator.append(token)
-                        }
-                    }
-
-                    val finalResponseText = responseAccumulator.toString().trim()
+                    val responseAcc = StringBuilder()
+                    withContext(Dispatchers.Default) { AgentBridge.processPrompt(fullPrompt) { token -> responseAcc.append(token) } }
+                    val finalResponseText = responseAcc.toString().trim()
                     val clientId = request.user ?: "openai-client"
                     ChatSessionManager.appendMessage(clientId, "User", lastUserMessage)
                     ChatSessionManager.appendMessage(clientId, "Assistant", finalResponseText)
-
-                    call.respond(
-                        OpenAIChatResponse(
-                            id = reqId,
-                            model = requestedModel,
-                            choices = listOf(
-                                OpenAIChoice(
-                                    index = 0,
-                                    message = OpenAIMessage(role = "assistant", content = finalResponseText),
-                                    finishReason = "stop"
-                                )
-                            )
-                        )
-                    )
+                    call.respond(OpenAIChatResponse(id = reqId, model = requestedModel, choices = listOf(OpenAIChoice(index = 0, message = OpenAIMessage(role = "assistant", content = finalResponseText), finishReason = "stop"))))
                 }
             } catch (e: Exception) {
-                call.respond(
-                    HttpStatusCode.InternalServerError,
-                    mapOf("error" to mapOf("message" to (e.localizedMessage ?: "Unknown error"), "type" to "server_error"))
-                )
+                call.respond(HttpStatusCode.InternalServerError, mapOf("error" to mapOf("message" to (e.localizedMessage ?: "Unknown error"))))
             }
         }
 
-        // --- Termux CLI Dedicated SSE Endpoint ---
-        post("/api/agent/stream") {
-            try {
-                val request = call.receive<ClientMessage>()
-                val clientId = request.clientId.ifBlank { "termux-cli" }
-
-                if (request.resetSession) {
-                    ChatSessionManager.clearSession(clientId)
-                }
-
-                val history = ChatSessionManager.getHistory(clientId)
-                val fullPrompt = buildString {
-                    for ((role, text) in history) {
-                        append("$role: $text\n")
-                    }
-                    if (!request.cwd.isNullOrBlank()) append("Current Directory: ${request.cwd}\n")
-                    if (!request.gitContext.isNullOrBlank()) append("${request.gitContext}\n")
-                    if (!request.stdinContent.isNullOrBlank()) append("Piped Input:\n${request.stdinContent}\n")
-                    append("User: ${request.prompt}\nAssistant:")
-                }
-
-                val responseAccumulator = StringBuilder()
-
-                call.respondTextWriter(contentType = ContentType.Text.EventStream) {
-                    withContext(Dispatchers.Default) {
-                        AgentBridge.processPrompt(fullPrompt) { token ->
-                            responseAccumulator.append(token)
-                            write("data: $token\n\n")
-                            flush()
-                        }
-                    }
-                    write("data: [DONE]\n\n")
-                    flush()
-                }
-
-                ChatSessionManager.appendMessage(clientId, "User", request.prompt)
-                ChatSessionManager.appendMessage(clientId, "Assistant", responseAccumulator.toString().trim())
-
-            } catch (e: Exception) {
-                call.respond(
-                    HttpStatusCode.InternalServerError,
-                    mapOf("status" to "error", "message" to (e.localizedMessage ?: "Unknown error"))
-                )
-            }
-        }
-
-        // --- Telegram Bot Webhook Endpoint ---
+        // --- Telegram Webhook Endpoint ---
         post("/api/telegram/webhook") {
             try {
                 val update = call.receive<TelegramUpdate>()
-
-                // Handle Inline Button Callback Queries (Approvals)
                 val callbackQuery = update.callbackQuery
                 if (callbackQuery != null) {
                     answerCallbackQuery(telegramBotToken, callbackQuery.id)
-
                     val data = callbackQuery.data ?: ""
                     val msg = callbackQuery.message
                     val chatId = msg?.chat?.id
                     val messageId = msg?.messageId
-
                     if (data.contains(":") && chatId != null && messageId != null) {
                         val parts = data.split(":")
-                        val action = parts[0] // "approve" or "deny"
-                        val taskId = parts[1]
-
-                        val approved = (action == "approve")
-                        val future = TelegramApprovalStore.pendingApprovals.remove(taskId)
-                        future?.complete(approved)
-
-                        val statusText = if (approved) "✅ *Action Approved*" else "⛔ *Action Denied*"
-                        editTelegramMessage(telegramBotToken, chatId, messageId, "${msg.text}\n\n$statusText")
+                        val approved = (parts[0] == "approve")
+                        TelegramApprovalStore.pendingApprovals.remove(parts[1])?.complete(approved)
+                        editTelegramMessage(telegramBotToken, chatId, messageId, "${msg.text}\n\n${if (approved) "✅ *Action Approved*" else "⛔ *Action Denied*"}")
                     }
-
                     call.respond(HttpStatusCode.OK)
                     return@post
                 }
 
-                // Handle Standard Messages
                 val message = update.message
                 val text = message?.text
                 val chatId = message?.chat?.id
@@ -597,145 +470,33 @@ fun Application.configureRouting() {
                         return@post
                     }
 
-                    // Handle Interactive Shell Command (/shell ...)
                     if (text.startsWith("/shell ")) {
                         val cmd = text.removePrefix("/shell").trim()
                         val statusId = sendTelegramMessage(telegramBotToken, chatId, "💻 *Executing Shell:*\n`$cmd`")
                         val result = ShellSessionManager.executeCommand(chatId, cmd)
-                        if (statusId != null) {
-                            editTelegramMessage(telegramBotToken, chatId, statusId, "💻 *Shell Output:*\n```bash\n$result\n```")
-                        }
+                        if (statusId != null) editTelegramMessage(telegramBotToken, chatId, statusId, "💻 *Shell Output:*\n```bash\n$result\n```")
                         call.respond(HttpStatusCode.OK)
                         return@post
                     }
 
-                    // Handle Cron Reminder Command (/remind 5m Task...)
-                    if (text.startsWith("/remind ")) {
-                        val parts = text.removePrefix("/remind").trim().split(" ", limit = 2)
-                        if (parts.size == 2) {
-                            val timeStr = parts[0]
-                            val prompt = parts[1]
-                            val multiplier = when {
-                                timeStr.endsWith("s") -> 1000L
-                                timeStr.endsWith("m") -> 60 * 1000L
-                                timeStr.endsWith("h") -> 60 * 60 * 1000L
-                                else -> 60 * 1000L
-                            }
-                            val value = timeStr.dropLast(1).toLongOrNull() ?: 1L
-                            val triggerTime = System.currentTimeMillis() + (value * multiplier)
-
-                            CronJobManager.addTask(
-                                ScheduledTask(
-                                    taskId = "cron-${System.currentTimeMillis()}",
-                                    chatId = chatId,
-                                    prompt = prompt,
-                                    executeAtTimestamp = triggerTime
-                                )
-                            )
-                            sendTelegramMessage(telegramBotToken, chatId, "⏱️ Reminder scheduled for $timeStr from now: *$prompt*")
-                        } else {
-                            sendTelegramMessage(telegramBotToken, chatId, "Usage: `/remind <10s|5m|2h> <task prompt>`")
-                        }
-                        call.respond(HttpStatusCode.OK)
-                        return@post
-                    }
-
-                    // 1. Send initial ticker message
                     val statusMessageId = sendTelegramMessage(telegramBotToken, chatId, "⚙️ *Agent Initializing...*\n`Processing prompt`")
-
                     val history = ChatSessionManager.getHistory(clientId)
                     val fullPrompt = buildString {
-                        for ((role, msg) in history) {
-                            append("$role: $msg\n")
-                        }
+                        for ((role, msg) in history) append("$role: $msg\n")
                         append("User: $text\nAssistant:")
                     }
 
-                    // 2. Execute agent prompt with live ticker updates & approval hooks
                     val responseText = withContext(Dispatchers.Default) {
-                        AgentBridge.processPromptWithTelegramUpdates(
-                            prompt = fullPrompt,
-                            botToken = telegramBotToken,
-                            chatId = chatId,
-                            messageId = statusMessageId ?: 0L
-                        )
+                        AgentBridge.processPromptWithTelegramUpdates(prompt = fullPrompt, botToken = telegramBotToken, chatId = chatId, messageId = statusMessageId ?: 0L)
                     }
 
-                    // 3. Edit message to final task completion state
-                    if (statusMessageId != null) {
-                        editTelegramMessage(telegramBotToken, chatId, statusMessageId, "✅ *Task Completed*\n\n$responseText")
-                    }
-
+                    if (statusMessageId != null) editTelegramMessage(telegramBotToken, chatId, statusMessageId, "✅ *Task Completed*\n\n$responseText")
                     ChatSessionManager.appendMessage(clientId, "User", text)
                     ChatSessionManager.appendMessage(clientId, "Assistant", responseText)
                 }
-
                 call.respond(HttpStatusCode.OK)
             } catch (e: Exception) {
-                call.respond(
-                    HttpStatusCode.InternalServerError,
-                    mapOf("status" to "error", "message" to (e.localizedMessage ?: "Unknown error"))
-                )
-            }
-        }
-
-        // --- Native Phone App & Web WebSocket Endpoint ---
-        webSocket("/ws/agent") {
-            activeConnections.add(this)
-            try {
-                for (frame in incoming) {
-                    if (frame is Frame.Text) {
-                        val text = frame.readText()
-                        val clientMsg = try {
-                            Json.decodeFromString(ClientMessage.serializer(), text)
-                        } catch (e: Exception) {
-                            ClientMessage(clientId = "ws-client", prompt = text)
-                        }
-
-                        val clientId = clientMsg.clientId.ifBlank { "ws-client" }
-                        if (clientMsg.resetSession) {
-                            ChatSessionManager.clearSession(clientId)
-                        }
-
-                        try {
-                            val history = ChatSessionManager.getHistory(clientId)
-                            val fullPrompt = buildString {
-                                for ((role, t) in history) {
-                                    append("$role: $t\n")
-                                }
-                                append("User: ${clientMsg.prompt}\nAssistant:")
-                            }
-
-                            val responseAccumulator = StringBuilder()
-
-                            withContext(Dispatchers.Default) {
-                                AgentBridge.processPrompt(fullPrompt) { token ->
-                                    responseAccumulator.append(token)
-                                }
-                            }
-
-                            val finalResponseText = responseAccumulator.toString().trim()
-
-                            val chunk = ServerResponse(token = finalResponseText, isFinished = false)
-                            outgoing.send(Frame.Text(Json.encodeToString(ServerResponse.serializer(), chunk)))
-
-                            ChatSessionManager.appendMessage(clientId, "User", clientMsg.prompt)
-                            ChatSessionManager.appendMessage(clientId, "Assistant", finalResponseText)
-
-                            val finalChunk = ServerResponse(token = "", isFinished = true)
-                            outgoing.send(Frame.Text(Json.encodeToString(ServerResponse.serializer(), finalChunk)))
-
-                        } catch (e: Exception) {
-                            val errorChunk = ServerResponse(token = "\nError executing prompt: ${e.localizedMessage}", isFinished = true)
-                            val errorJson = Json.encodeToString(ServerResponse.serializer(), errorChunk)
-                            outgoing.send(Frame.Text(errorJson))
-                        }
-                    }
-                }
-            } catch (e: Exception) {
-                // Safe handling of socket disconnects
-            } finally {
-                activeConnections.remove(this)
+                call.respond(HttpStatusCode.InternalServerError, mapOf("status" to "error", "message" to (e.localizedMessage ?: "Unknown error")))
             }
         }
     }
