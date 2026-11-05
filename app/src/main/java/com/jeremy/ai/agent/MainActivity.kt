@@ -21,14 +21,17 @@ import androidx.compose.ui.Modifier
 import androidx.core.content.ContextCompat
 import com.jeremy.ai.agent.ui.AgentChatScreen
 import com.jeremy.ai.backend.configureRouting
+import io.ktor.serialization.kotlinx.json.*
 import io.ktor.server.application.install
 import io.ktor.server.engine.EmbeddedServer
 import io.ktor.server.engine.embeddedServer
 import io.ktor.server.netty.Netty
+import io.ktor.server.plugins.contentnegotiation.*
 import io.ktor.server.sse.SSE
 import io.ktor.server.websocket.*
+import kotlinx.serialization.json.Json
 import kotlin.time.Duration.Companion.seconds
-import io.ktor.server.plugins.contentnegotiation
+
 class MainActivity : ComponentActivity() {
 
     private var ktorServer: EmbeddedServer<*, *>? = null
@@ -105,10 +108,16 @@ class MainActivity : ComponentActivity() {
                     // 2. Install Server-Sent Events (SSE) plugin required for official MCP transport
                     install(SSE)
 
-                    // NOTE: Global ContentNegotiation is intentionally omitted here 
-                    // to prevent payload parsing collisions with the official MCP Kotlin SDK.
+                    // 3. Install ContentNegotiation to parse JSON-RPC payloads (fixes 406 Not Acceptable)
+                    install(ContentNegotiation) {
+                        json(Json {
+                            ignoreUnknownKeys = true
+                            isLenient = true
+                            prettyPrint = true
+                        })
+                    }
 
-                    // 3. Register application routing endpoints (including /mcp)
+                    // 4. Register application routing endpoints (including /mcp)
                     configureRouting()
                 }.start(wait = false)
                 Log.i("MainActivity", "Ktor Netty server successfully started on port 8080 with MCP & SSE support")
