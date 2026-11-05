@@ -25,14 +25,20 @@ import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.jsonObject
 import java.io.File
 import android.os.Environment
+import android.content.Context
+import android.content.Intent
+import android.app.PendingIntent
+import android.content.BroadcastReceiver
+import android.os.Bundle
 import java.util.Collections
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.CompletableFuture
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicInteger
 
 // ==========================================
 // 1. OpenAI Spec Data Models
 // ==========================================
-
 @Serializable
 data class OpenAIMessage(val role: String, val content: String)
 
@@ -79,7 +85,6 @@ data class OpenAIModelListResponse(val `object`: String = "list", val data: List
 // ==========================================
 // 2. Standalone JSON-RPC MCP Protocol Models
 // ==========================================
-
 @Serializable
 data class JsonRpcRequest(
     val jsonrpc: String = "2.0",
@@ -105,7 +110,6 @@ data class JsonRpcError(
 // ==========================================
 // 3. Legacy / Native Client Models
 // ==========================================
-
 @Serializable
 data class ClientMessage(
     val clientId: String = "default-client",
@@ -123,7 +127,6 @@ data class ServerResponse(val token: String, val isFinished: Boolean)
 // ==========================================
 // 4. Telegram Bot DTO Models
 // ==========================================
-
 @Serializable
 data class TelegramUpdate(
     @SerialName("update_id") val updateId: Long,
@@ -132,18 +135,25 @@ data class TelegramUpdate(
 )
 
 @Serializable
-data class TelegramMessage(@SerialName("message_id") val messageId: Long, val chat: TelegramChat, val text: String? = null)
+data class TelegramMessage(
+    @SerialName("message_id") val messageId: Long,
+    val chat: TelegramChat,
+    val text: String? = null
+)
 
 @Serializable
 data class TelegramChat(val id: Long, val type: String)
 
 @Serializable
-data class TelegramCallbackQuery(val id: String, val data: String? = null, val message: TelegramMessage? = null)
+data class TelegramCallbackQuery(
+    val id: String,
+    val data: String? = null,
+    val message: TelegramMessage? = null
+)
 
 // ==========================================
-// 5. Stores & Shell Manager
+// 5. Stores & Shell Manager (Termux PendingIntent Bridge)
 // ==========================================
-
 object TelegramApprovalStore {
     val pendingApprovals = ConcurrentHashMap<String, CompletableFuture<Boolean>>()
 }
@@ -152,15 +162,19 @@ object ChatSessionManager {
     private val sessions = ConcurrentHashMap<String, MutableList<Pair<String, String>>>()
     fun getHistory(clientId: String) = sessions.getOrPut(clientId) { mutableListOf() }
     fun clearSession(clientId: String) { sessions.remove(clientId) }
-    fun appendMessage(clientId: String, role: String, content: String) { getHistory(clientId).add(Pair(role, content)) }
+    fun appendMessage(clientId: String, role: String, content: String) {
+        getHistory(clientId).add(Pair(role, content))
+    }
 }
 
 object ShellSessionManager {
     private val workingDirectories = ConcurrentHashMap<Long, File>()
+    private val pendingResults = ConcurrentHashMap<Int, CompletableFuture<String>>()
+    private val atomicId = AtomicInteger(0)
 
-    fun executeCommand(chatId: Long, command: String): String {
+    fun executeCommand(context: Context, chatId: Long, command: String): String {
         val currentDir = workingDirectories.getOrPut(chatId) { File("/data/data/com.termux/files/home") }
-        
+
         if (command.trim().startsWith("cd ")) {
             val targetDir = command.trim().removePrefix("cd").trim()
             val newDir = if (targetDir.startsWith("/")) File(targetDir) else File(currentDir, targetDir)
@@ -172,18 +186,66 @@ object ShellSessionManager {
             }
         }
 
-        return try {
-            val process = ProcessBuilder("sh", "-c", command)
-                .directory(currentDir)
-                .redirectErrorStream(true)
-                .start()
+        val executionId = atomicId.incrementAndGet()
+        val future = CompletableFuture<String>()
+        pendingResults[executionId] = future
+
+        try {
+            val callbackIntent = Intent(context, TermuxResultReceiver::class.java).apply {
+                putExtra("execution_id", executionId)
+            }
             
-            val output = process.inputStream.bufferedReader().use { it.readText() }
-            process.waitFor()
-            if (output.isBlank()) "Command executed successfully with no output." else output.take(4000)
+            val pendingIntent = PendingIntent.getBroadcast(
+                context,
+                executionId,
+                callbackIntent,
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+            )
+
+            val intent = Intent().apply {
+                setClassName("com.termux", "com.termux.app.RunCommandService")
+                action = "com.termux.RUN_COMMAND"
+                putExtra("com.termux.RUN_COMMAND_PATH", "/data/data/com.termux/files/usr/bin/sh")
+                putExtra("com.termux.RUN_COMMAND_ARGUMENTS", arrayOf("-c", command))
+                putExtra("com.termux.RUN_COMMAND_WORKDIR", currentDir.absolutePath)
+                putExtra("com.termux.RUN_COMMAND_BACKGROUND", true)
+                putExtra("com.termux.RUN_COMMAND_PENDING_INTENT", pendingIntent)
+            }
+
+            context.startForegroundService(intent)
+
+            return try {
+                future.get(4, TimeUnit.SECONDS) ?: "Command executed with no output."
+            } catch (e: java.util.concurrent.TimeoutException) {
+                "Error: Termux execution timed out waiting for callback."
+            } finally {
+                pendingResults.remove(executionId)
+            }
         } catch (e: Exception) {
-            "Shell execution error: ${e.localizedMessage}"
+            pendingResults.remove(executionId)
+            return "Termux Intent dispatch error: ${e.localizedMessage}"
         }
+    }
+
+    fun handleResult(executionId: Int, resultBundle: Bundle?) {
+        val future = pendingResults.remove(executionId) ?: return
+        val stdout = resultBundle?.let { bundle ->
+            bundle.getString("com.termux.plugin.result.bundle.stdout")
+                ?: bundle.getString("stdout")
+                ?: bundle.keySet().firstNotNullOfOrNull { key -> 
+                    if (key.contains("stdout", true)) bundle.getString(key) else null 
+                }
+        } ?: "Command completed successfully."
+
+        future.complete(stdout.take(4000))
+    }
+}
+
+class TermuxResultReceiver : BroadcastReceiver() {
+    override fun onReceive(context: Context, intent: Intent) {
+        val executionId = intent.getIntExtra("execution_id", -1)
+        val bundle = intent.getBundleExtra("com.termux.plugin.result.bundle") ?: intent.extras
+        ShellSessionManager.handleResult(executionId, bundle)
     }
 }
 
@@ -220,7 +282,6 @@ object CronJobManager {
 // ==========================================
 // 6. Utilities & Path Resolution
 // ==========================================
-
 fun getAvailableModels(): List<OpenAIModelObject> {
     val modelList = mutableListOf<OpenAIModelObject>()
     try {
@@ -299,9 +360,7 @@ private fun answerCallbackQuery(botToken: String, callbackQueryId: String): Int?
 // ==========================================
 // 7. Ktor Module & Routing Setup
 // ==========================================
-
 fun Application.configureServer() {
-    // Install ContentNegotiation to fix 406 Not Acceptable errors on JSON payloads
     install(ContentNegotiation) {
         json(Json {
             ignoreUnknownKeys = true
@@ -309,7 +368,6 @@ fun Application.configureServer() {
             prettyPrint = true
         })
     }
-
     configureRouting()
 }
 
@@ -357,7 +415,7 @@ fun Application.configureRouting() {
                     "resources/read" -> {
                         val uri = req.params?.get("uri")?.jsonPrimitive?.content ?: ""
                         val content = when (uri) {
-                            "workspace://git/status" -> ShellSessionManager.executeCommand(0L, "git status")
+                            "workspace://git/status" -> ShellSessionManager.executeCommand(application, 0L, "git status")
                             "system://device/info" -> "Device: Google Pixel 9 (Tensor G4)\nRuntime: Termux / Android Ktor"
                             else -> "Error: Unknown resource URI"
                         }
@@ -373,7 +431,7 @@ fun Application.configureRouting() {
                     "tools/call" -> {
                         val toolName = req.params?.get("name")?.jsonPrimitive?.content ?: ""
                         val arguments = req.params?.get("arguments")?.jsonObject
-                        
+
                         val toolOutput = when (toolName) {
                             "read_workspace_file" -> {
                                 val path = arguments?.get("path")?.jsonPrimitive?.content ?: ""
@@ -397,7 +455,7 @@ fun Application.configureRouting() {
                             }
                             "execute_shell" -> {
                                 val command = arguments?.get("command")?.jsonPrimitive?.content ?: ""
-                                ShellSessionManager.executeCommand(0L, command)
+                                ShellSessionManager.executeCommand(application, 0L, command)
                             }
                             else -> "Error: Unknown tool $toolName"
                         }
@@ -493,6 +551,7 @@ fun Application.configureRouting() {
                     val msg = callbackQuery.message
                     val chatId = msg?.chat?.id
                     val messageId = msg?.messageId
+
                     if (data.contains(":") && chatId != null && messageId != null) {
                         val parts = data.split(":")
                         val approved = (parts[0] == "approve")
@@ -519,7 +578,7 @@ fun Application.configureRouting() {
                     if (text.startsWith("/shell ")) {
                         val cmd = text.removePrefix("/shell").trim()
                         val statusId = sendTelegramMessage(telegramBotToken, chatId, "💻 *Executing Shell:*\n`$cmd`")
-                        val result = ShellSessionManager.executeCommand(chatId, cmd)
+                        val result = ShellSessionManager.executeCommand(application, chatId, cmd)
                         if (statusId != null) editTelegramMessage(telegramBotToken, chatId, statusId, "💻 *Shell Output:*\n```bash\n$result\n```")
                         call.respond(HttpStatusCode.OK)
                         return@post
