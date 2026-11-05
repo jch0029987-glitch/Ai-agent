@@ -28,7 +28,7 @@ import io.ktor.server.netty.Netty
 import io.ktor.server.sse.SSE
 import io.ktor.server.websocket.*
 import kotlin.time.Duration.Companion.seconds
-
+import io.ktor.server.plugins.contentnegotiation
 class MainActivity : ComponentActivity() {
 
     private var ktorServer: EmbeddedServer<*, *>? = null
