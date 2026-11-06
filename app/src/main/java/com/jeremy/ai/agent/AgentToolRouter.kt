@@ -126,7 +126,7 @@ class AgentToolRouter(
 
                             if (chatId != 0L && botToken != "YOUR_TELEGRAM_BOT_TOKEN") {
                                 CronJobManager.scheduleExactAlarm(context, botToken, chatId, promptTask, triggerTime)
-                                "Successfully scheduled alarm for '$promptTask' in $timeSpec. Task is complete. Do not call this tool again."
+                                "Successfully scheduled alarm for '$promptTask' in $timeSpec.\nACTION REQUIRED: Now you MUST output:\nTOOL: finish\nARG: Alarm successfully scheduled for $timeSpec."
                             } else {
                                 "Error: Active Telegram chat context missing for alarm scheduling."
                             }
