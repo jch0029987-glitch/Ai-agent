@@ -2,6 +2,7 @@ package com.jeremy.ai.agent
 
 import android.Manifest
 import android.app.AlarmManager
+import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
@@ -35,6 +36,7 @@ import kotlinx.serialization.json.Json
 import kotlin.time.Duration.Companion.seconds
 import com.jeremy.ai.backend.ShellSessionManager
 import com.jeremy.ai.backend.configureRouting
+import com.jeremy.ai.backend.AlarmReceiver
 
 class MainActivity : ComponentActivity() {
 
@@ -159,6 +161,24 @@ class MainActivity : ComponentActivity() {
                     startActivity(intent)
                 } catch (e: Exception) {
                     Log.e("MainActivity", "Failed to request exact alarm permission", e)
+                }
+            } else {
+                // Force Android to register/display app in the Alarms & reminders settings menu
+                try {
+                    val dummyIntent = Intent(this, AlarmReceiver::class.java).apply {
+                        putExtra("chat_id", 0L)
+                        putExtra("prompt", "init_probe")
+                    }
+                    val pendingIntent = PendingIntent.getBroadcast(
+                        this, 
+                        8888, 
+                        dummyIntent, 
+                        PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+                    )
+                    // Set a far-future dummy alarm just to force OS menu population
+                    alarmManager.setExact(AlarmManager.RTC_WAKEUP, System.currentTimeMillis() + 86400000L, pendingIntent)
+                } catch (e: Exception) {
+                    Log.e("MainActivity", "Failed to force alarm registration probe", e)
                 }
             }
         }
