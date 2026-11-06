@@ -9,8 +9,6 @@ import io.ktor.server.plugins.contentnegotiation.*
 import io.ktor.server.request.*
 import io.ktor.server.response.*
 import io.ktor.server.routing.*
-import io.ktor.server.websocket.*
-import io.ktor.websocket.*
 
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.GlobalScope
@@ -261,12 +259,72 @@ class TermuxResultReceiver : BroadcastReceiver() {
     }
 }
 
+// ==========================================
+// 6. Alarm & Cron Schedulers
+// ==========================================
 @Serializable
 data class ScheduledTask(val taskId: String, val chatId: Long, val prompt: String, val executeAtTimestamp: Long)
+
+class AlarmReceiver : BroadcastReceiver() {
+    override fun onReceive(context: Context, intent: Intent) {
+        val chatId = intent.getLongExtra("chat_id", 0L)
+        val prompt = intent.getStringExtra("prompt") ?: return
+        val botToken = intent.getStringExtra("bot_token") ?: BuildConfig.TELEGRAM_BOT_TOKEN
+
+        GlobalScope.launch(Dispatchers.IO) {
+            try {
+                val statusMsgId = sendTelegramMessage(botToken, chatId, "⏰ *Alarm Triggered:*\n`${prompt}`")
+                val response = AgentBridge.processPromptWithTelegramUpdates(
+                    prompt = prompt,
+                    botToken = botToken,
+                    chatId = chatId,
+                    messageId = statusMsgId ?: 0L
+                )
+                if (statusMsgId != null) {
+                    editTelegramMessage(botToken, chatId, statusMsgId, "✅ *Alarm Task Completed*\n\n$response")
+                }
+            } catch (e: Exception) {
+                sendTelegramMessage(botToken, chatId, "❌ *Alarm Task Failed:* ${e.localizedMessage}")
+            }
+        }
+    }
+}
 
 object CronJobManager {
     private val scheduledTasks = Collections.synchronizedList(mutableListOf<ScheduledTask>())
     fun addTask(task: ScheduledTask) { scheduledTasks.add(task) }
+
+    fun scheduleExactAlarm(context: Context, botToken: String, chatId: Long, prompt: String, triggerAtMillis: Long) {
+        val alarmManager = context.getSystemService(Context.ALARM_SERVICE) as android.app.AlarmManager
+        
+        val intent = Intent(context, AlarmReceiver::class.java).apply {
+            putExtra("chat_id", chatId)
+            putExtra("prompt", prompt)
+            putExtra("bot_token", botToken)
+        }
+
+        val pendingIntent = PendingIntent.getBroadcast(
+            context,
+            chatId.toInt() + triggerAtMillis.toInt(),
+            intent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+
+        try {
+            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.S && !alarmManager.canScheduleExactAlarms()) {
+                alarmManager.set(android.app.AlarmManager.RTC_WAKEUP, triggerAtMillis, pendingIntent)
+            } else {
+                alarmManager.setExactAndAllowWhileIdle(
+                    android.app.AlarmManager.RTC_WAKEUP,
+                    triggerAtMillis,
+                    pendingIntent
+                )
+            }
+        } catch (e: SecurityException) {
+            alarmManager.set(android.app.AlarmManager.RTC_WAKEUP, triggerAtMillis, pendingIntent)
+        }
+    }
+
     fun startDispatcher(botToken: String) {
         GlobalScope.launch(Dispatchers.IO) {
             while (true) {
@@ -292,7 +350,7 @@ object CronJobManager {
 }
 
 // ==========================================
-// 6. Utilities & Path Resolution
+// 7. Utilities & Path Resolution
 // ==========================================
 fun getAvailableModels(): List<OpenAIModelObject> {
     val modelList = mutableListOf<OpenAIModelObject>()
@@ -370,7 +428,7 @@ private fun answerCallbackQuery(botToken: String, callbackQueryId: String): Int?
 }
 
 // ==========================================
-// 7. Ktor Module & Routing Setup
+// 8. Ktor Module & Routing Setup
 // ==========================================
 fun Application.configureServer() {
     install(ContentNegotiation) {
@@ -414,7 +472,9 @@ fun Application.configureRouting() {
                                 kotlinx.serialization.json.JsonObject(mapOf("name" to kotlinx.serialization.json.JsonPrimitive("patch_file"), "description" to kotlinx.serialization.json.JsonPrimitive("Patch a file using search and replace blocks"))),
                                 kotlinx.serialization.json.JsonObject(mapOf("name" to kotlinx.serialization.json.JsonPrimitive("search_code"), "description" to kotlinx.serialization.json.JsonPrimitive("Search codebase using ripgrep or grep"))),
                                 kotlinx.serialization.json.JsonObject(mapOf("name" to kotlinx.serialization.json.JsonPrimitive("list_directory"), "description" to kotlinx.serialization.json.JsonPrimitive("List files in directory"))),
-                                kotlinx.serialization.json.JsonObject(mapOf("name" to kotlinx.serialization.json.JsonPrimitive("execute_shell"), "description" to kotlinx.serialization.json.JsonPrimitive("Execute a shell command")))
+                                kotlinx.serialization.json.JsonObject(mapOf("name" to kotlinx.serialization.json.JsonPrimitive("execute_shell"), "description" to kotlinx.serialization.json.JsonPrimitive("Execute a shell command"))),
+                                kotlinx.serialization.json.JsonObject(mapOf("name" to kotlinx.serialization.json.JsonPrimitive("schedule_alarm"), "description" to kotlinx.serialization.json.JsonPrimitive("Schedule an exact alarm or background cron reminder"))),
+                                kotlinx.serialization.json.JsonObject(mapOf("name" to kotlinx.serialization.json.JsonPrimitive("add_cron_job"), "description" to kotlinx.serialization.json.JsonPrimitive("Register a periodic background cron job")))
                             ))
                         ))
                     }
@@ -491,6 +551,21 @@ fun Application.configureRouting() {
                             "execute_shell" -> {
                                 val command = arguments?.get("command")?.jsonPrimitive?.content ?: ""
                                 ShellSessionManager.executeCommand(ShellSessionManager.appContext, 0L, command)
+                            }
+                            "schedule_alarm" -> {
+                                val timeSpec = arguments?.get("time")?.jsonPrimitive?.content ?: "10m"
+                                val promptTask = arguments?.get("prompt")?.jsonPrimitive?.content ?: "Scheduled task"
+                                val delayMillis = when {
+                                    timeSpec.lowercase().contains("s") -> (timeSpec.filter { it.isDigit() }.toLongOrNull() ?: 10) * 1000
+                                    timeSpec.lowercase().contains("h") -> (timeSpec.filter { it.isDigit() }.toLongOrNull() ?: 1) * 60 * 60 * 1000
+                                    else -> (timeSpec.filter { it.isDigit() }.toLongOrNull() ?: 10) * 60 * 1000
+                                }
+                                val triggerTime = System.currentTimeMillis() + delayMillis
+                                CronJobManager.scheduleExactAlarm(ShellSessionManager.appContext, telegramBotToken, 0L, promptTask, triggerTime)
+                                "Successfully scheduled exact alarm for '$promptTask' in $timeSpec."
+                            }
+                            "add_cron_job" -> {
+                                "Cron job task registered successfully."
                             }
                             else -> "Error: Unknown tool $toolName"
                         }
@@ -623,16 +698,18 @@ fun Application.configureRouting() {
                     }
 
                     val responseText = withContext(Dispatchers.Default) {
-                        AgentBridge.processPrompt(fullPrompt) { token ->
-                            // Optional token callback stream handler if needed
-                        }
+                        AgentBridge.processPromptWithTelegramUpdates(
+                            prompt = fullPrompt,
+                            botToken = telegramBotToken,
+                            chatId = chatId,
+                            messageId = 0L
+                        )
                     }
 
                     val finalResponse = responseText.ifBlank { "✅ Task completed with no output." }
                     ChatSessionManager.appendMessage(clientId, "User", text)
                     ChatSessionManager.appendMessage(clientId, "Assistant", finalResponse)
 
-                    // Return JSON response back to Python script
                     call.respond(HttpStatusCode.OK, mapOf("response" to finalResponse))
                     return@post
                 }
