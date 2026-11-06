@@ -12,6 +12,8 @@ import io.ktor.server.routing.*
 
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import kotlinx.serialization.SerialName
+import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.jsonPrimitive
@@ -20,7 +22,99 @@ import java.io.File
 import android.os.Environment
 
 // ==========================================
-// 1. Utilities & Path Resolution
+// 1. DTO & Protocol Models (Required for Routing)
+// ==========================================
+@Serializable
+data class OpenAIMessage(val role: String, val content: String)
+
+@Serializable
+data class OpenAIChatRequest(
+    val model: String? = "gemma-4-abliterated",
+    val messages: List<OpenAIMessage>,
+    val stream: Boolean? = false,
+    val temperature: Float? = 0.7f,
+    val user: String? = null
+)
+
+@Serializable
+data class OpenAIChoice(
+    val index: Int = 0,
+    val message: OpenAIMessage? = null,
+    val delta: OpenAIDelta? = null,
+    @SerialName("finish_reason") val finishReason: String? = null
+)
+
+@Serializable
+data class OpenAIDelta(val role: String? = null, val content: String? = null)
+
+@Serializable
+data class OpenAIChatResponse(
+    val id: String,
+    val `object`: String = "chat.completion",
+    val created: Long = System.currentTimeMillis() / 1000,
+    val model: String = "gemma-4-abliterated",
+    val choices: List<OpenAIChoice>
+)
+
+@Serializable
+data class OpenAIModelObject(
+    val id: String,
+    val `object`: String = "model",
+    val created: Long = System.currentTimeMillis() / 1000,
+    val owned_by: String = "local-pixel9"
+)
+
+@Serializable
+data class OpenAIModelListResponse(val `object`: String = "list", val data: List<OpenAIModelObject>)
+
+@Serializable
+data class JsonRpcRequest(
+    val jsonrpc: String = "2.0",
+    val id: kotlinx.serialization.json.JsonElement? = null,
+    val method: String,
+    val params: JsonObject? = null
+)
+
+@Serializable
+data class JsonRpcResponse(
+    val jsonrpc: String = "2.0",
+    val id: kotlinx.serialization.json.JsonElement? = null,
+    val result: JsonObject? = null,
+    val error: JsonRpcError? = null
+)
+
+@Serializable
+data class JsonRpcError(
+    val code: Int,
+    val message: String
+)
+
+@Serializable
+data class TelegramUpdate(
+    @SerialName("update_id") val updateId: Long,
+    val message: TelegramMessage? = null,
+    @SerialName("callback_query") val callbackQuery: TelegramCallbackQuery? = null
+)
+
+@Serializable
+data class TelegramMessage(
+    @SerialName("message_id") val messageId: Long,
+    val chat: TelegramChat,
+    val text: String? = null
+)
+
+@Serializable
+data class TelegramChat(val id: Long, val type: String)
+
+@Serializable
+data class TelegramCallbackQuery(
+    val id: String,
+    val data: String? = null,
+    val message: TelegramMessage? = null
+)
+
+// ==========================================
+// 2. Utilities & Path Resolution
 // ==========================================
 fun getAvailableModels(): List<OpenAIModelObject> {
     val modelList = mutableListOf<OpenAIModelObject>()
@@ -98,7 +192,7 @@ private fun answerCallbackQuery(botToken: String, callbackQueryId: String): Int?
 }
 
 // ==========================================
-// 2. Ktor Module & Routing Setup
+// 3. Ktor Module & Routing Setup
 // ==========================================
 fun Application.configureServer() {
     install(ContentNegotiation) {
