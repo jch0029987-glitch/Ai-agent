@@ -1,9 +1,12 @@
 package com.jeremy.ai.agent
 
 import android.Manifest
+import android.app.AlarmManager
+import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.net.Uri
+import android.os.Build
 import android.os.Bundle
 import android.os.PowerManager
 import android.provider.Settings
@@ -65,6 +68,7 @@ class MainActivity : ComponentActivity() {
         
         setupGlobalCrashHandler()
         checkAndRequestPermissions()
+        checkAndRequestExactAlarmPermission()
 
         // Bind application context for Termux Intent shell bridge
         ShellSessionManager.appContext = applicationContext
@@ -141,6 +145,22 @@ class MainActivity : ComponentActivity() {
             ktorServer = null
         } catch (e: Exception) {
             Log.e("MainActivity", "Error stopping Ktor server", e)
+        }
+    }
+
+    private fun checkAndRequestExactAlarmPermission() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            val alarmManager = getSystemService(Context.ALARM_SERVICE) as AlarmManager
+            if (!alarmManager.canScheduleExactAlarms()) {
+                try {
+                    val intent = Intent(Settings.ACTION_REQUEST_SCHEDULE_EXACT_ALARM).apply {
+                        data = Uri.parse("package:$packageName")
+                    }
+                    startActivity(intent)
+                } catch (e: Exception) {
+                    Log.e("MainActivity", "Failed to request exact alarm permission", e)
+                }
+            }
         }
     }
 
