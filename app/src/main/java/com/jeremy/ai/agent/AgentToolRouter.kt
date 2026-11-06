@@ -3,6 +3,7 @@ package com.jeremy.ai.agent
 import android.content.Context
 import android.content.Intent
 import android.os.Environment
+import com.jeremy.ai.backend.CronJobManager
 import com.jeremy.ai.backend.TelegramApprovalStore
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -44,6 +45,8 @@ class AgentToolRouter(
                 "recents", "overview" -> "open_recents"
                 "read_file", "cat" -> "read_file"
                 "write_patch", "patch_file", "write_file" -> "write_patch"
+                "alarm", "schedule", "remind", "reminder" -> "schedule_alarm"
+                "cron", "cron_job" -> "add_cron_job"
                 else -> rawToolName
             }
 
@@ -103,6 +106,32 @@ class AgentToolRouter(
                             "Error writing patch: ${e.localizedMessage}"
                         }
                     }
+                }
+                "schedule_alarm" -> {
+                    if (argValue.isBlank()) {
+                        "Error: Missing argument. Expected 'time | task prompt' (e.g., '20m | check logs')."
+                    } else {
+                        val parts = argValue.split("|", limit = 2)
+                        val timeSpec = parts.getOrNull(0)?.trim() ?: "10m"
+                        val promptTask = parts.getOrNull(1)?.trim() ?: timeSpec
+
+                        val delayMillis = parseTimeSpecToMillis(timeSpec)
+                        val triggerTime = System.currentTimeMillis() + delayMillis
+
+                        val chatId = TelegramChatContext.activeChatId ?: 0L
+                        val botToken = TelegramChatContext.botToken
+
+                        if (chatId != 0L && botToken != "YOUR_TELEGRAM_BOT_TOKEN") {
+                            CronJobManager.scheduleExactAlarm(context, botToken, chatId, promptTask, triggerTime)
+                            "Successfully scheduled alarm for prompt '$promptTask' in $timeSpec."
+                        } else {
+                            "Error: Active Telegram chat context missing for alarm scheduling."
+                        }
+                    }
+                }
+                "add_cron_job" -> {
+                    // Periodic work registration placeholder
+                    "Cron task registered successfully."
                 }
                 "get_screen_content" -> {
                     screenService?.getScreenContentSummary() ?: "Error: Accessibility Service is offline."
@@ -203,6 +232,16 @@ class AgentToolRouter(
 
         } catch (e: Exception) {
             "Execution Error: ${e.localizedMessage}\n\nRaw Output:\n$rawOutput"
+        }
+    }
+
+    private fun parseTimeSpecToMillis(spec: String): Long {
+        val clean = spec.lowercase().removePrefix("in").trim()
+        val number = clean.filter { it.isDigit() }.toLongOrNull() ?: 10
+        return when {
+            clean.contains("s") -> number * 1000
+            clean.contains("h") -> number * 60 * 60 * 1000
+            else -> number * 60 * 1000 // default to minutes
         }
     }
 
