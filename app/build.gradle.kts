@@ -136,6 +136,6 @@ dependencies {
     debugImplementation("androidx.compose.ui:ui-tooling")
     debugImplementation("androidx.compose.ui:ui-test-manifest")
     implementation("io.modelcontextprotocol:kotlin-sdk:0.16.0") // Use the latest stable version
-    (implementation "androidx.work:work-runtime-ktx:2.9.1")
+    implementation ("androidx.work:work-runtime-ktx:2.9.1")
 
 }
