@@ -57,7 +57,7 @@ class AgentManager(private val context: Context) {
     companion object {
         private const val TAG = "AgentManager"
         private val CASUAL_CHAT_REGEX = Regex("^(hi|hello|hey|sup|what's up|who are you|help|thanks|thank you).*")
-        private val ACTION_KEYWORDS = listOf("open", "launch", "click", "tap", "type", "get", "check", "list", "show", "press", "find", "read", "patch", "write", "task:", "execute", "git", "shell", "search")
+        private val ACTION_KEYWORDS = listOf("open", "launch", "click", "tap", "type", "get", "check", "list", "show", "press", "find", "read", "patch", "write", "task:", "execute", "git", "shell", "search", "alarm", "schedule", "remind", "cron")
     }
 
     private fun showToast(message: String) {
@@ -257,7 +257,7 @@ class AgentManager(private val context: Context) {
                     - Output format:
                       TOOL: tool_name
                       ARG: argument_value
-                    - Available Tools: execute_shell, patch_file, search_code, read_file, write_patch, open_browser, github_get_issues, get_screen_content, get_recent_notifications, open_app, get_installed_apps, click_text, type_text, tap_xy, scroll_down, scroll_up, go_home, go_back, finish
+                    - Available Tools: execute_shell, patch_file, search_code, read_file, write_patch, open_browser, github_get_issues, get_screen_content, get_recent_notifications, open_app, get_installed_apps, click_text, type_text, tap_xy, scroll_down, scroll_up, go_home, go_back, schedule_alarm, add_cron_job, finish
                     - Use TOOL: finish with ARG: summary when done. Do not repeat identical tool calls.
                 """.trimIndent()
 
@@ -307,6 +307,8 @@ class AgentManager(private val context: Context) {
                     "cat", "view_file" -> "read_file"
                     "patch", "write_file", "save_file" -> "write_patch"
                     "shell", "bash", "cmd" -> "execute_shell"
+                    "alarm", "schedule", "remind", "reminder" -> "schedule_alarm"
+                    "cron", "cron_job" -> "add_cron_job"
                     else -> rawToolName
                 }
 
