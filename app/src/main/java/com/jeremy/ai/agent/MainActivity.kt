@@ -33,6 +33,8 @@ import io.ktor.server.sse.SSE
 import io.ktor.server.websocket.*
 import kotlinx.serialization.json.Json
 import kotlin.time.Duration.Companion.seconds
+import com.jeremy.ai.backend.ShellSessionManager
+import com.jeremy.ai.backend.configureRouting
 
 class MainActivity : ComponentActivity() {
 
