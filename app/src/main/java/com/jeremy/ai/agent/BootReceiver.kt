@@ -1,4 +1,4 @@
-package com.jeremy.ai.backend
+package com.jeremy.ai.agent
 
 import android.app.AlarmManager
 import android.app.PendingIntent
