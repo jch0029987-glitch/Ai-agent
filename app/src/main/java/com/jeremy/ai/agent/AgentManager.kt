@@ -330,7 +330,16 @@ class AgentManager(private val context: Context) {
                 val toolResult = if (toolName == lastToolName && argValue == lastArgValue) {
                     "Error: Duplicate loop detected. You already called $toolName with argument '$argValue'. Try a different action or call finish."
                 } else {
-                    toolRouter.executeToolCall("TOOL: $toolName\nARG: $argValue")
+                    val result = toolRouter.executeToolCall("TOOL: $toolName\nARG: $argValue")
+                    
+                    // AUTO-FINISH HACK FOR LOCAL MODELS: If schedule_alarm succeeded, force an immediate exit and reply
+                    if (toolName == "schedule_alarm" && result.startsWith("Successfully scheduled")) {
+                        val finalSummary = "Task successfully completed: $result"
+                        onToken(finalSummary)
+                        return@withContext "Task Finished Successfully:\n$finalSummary"
+                    }
+                    
+                    result
                 }
 
                 lastToolName = toolName
