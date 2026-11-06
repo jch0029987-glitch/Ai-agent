@@ -23,8 +23,6 @@ import androidx.compose.material3.Surface
 import androidx.compose.ui.Modifier
 import androidx.core.content.ContextCompat
 import com.jeremy.ai.agent.ui.AgentChatScreen
-import com.jeremy.ai.backend.ShellSessionManager
-import com.jeremy.ai.backend.configureRouting
 import io.ktor.serialization.kotlinx.json.*
 import io.ktor.server.application.install
 import io.ktor.server.engine.EmbeddedServer
