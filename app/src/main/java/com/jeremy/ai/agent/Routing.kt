@@ -593,7 +593,7 @@ fun Application.configureRouting() {
                         TelegramApprovalStore.pendingApprovals.remove(parts[1])?.complete(approved)
                         editTelegramMessage(telegramBotToken, chatId, messageId, "${msg.text}\n\n${if (approved) "✅ *Action Approved*" else "⛔ *Action Denied*"}")
                     }
-                    call.respond(HttpStatusCode.OK)
+                    call.respond(HttpStatusCode.OK, mapOf("response" to "Callback handled."))
                     return@post
                 }
 
@@ -605,21 +605,17 @@ fun Application.configureRouting() {
                     val clientId = "telegram-$chatId"
                     if (text.trim().equals("/reset", ignoreCase = true)) {
                         ChatSessionManager.clearSession(clientId)
-                        sendTelegramMessage(telegramBotToken, chatId, "🔄 Session history cleared.")
-                        call.respond(HttpStatusCode.OK)
+                        call.respond(HttpStatusCode.OK, mapOf("response" to "🔄 Session history cleared."))
                         return@post
                     }
 
                     if (text.startsWith("/shell ")) {
                         val cmd = text.removePrefix("/shell").trim()
-                        val statusId = sendTelegramMessage(telegramBotToken, chatId, "💻 *Executing Shell:*\n`$cmd`")
                         val result = ShellSessionManager.executeCommand(ShellSessionManager.appContext, chatId, cmd)
-                        if (statusId != null) editTelegramMessage(telegramBotToken, chatId, statusId, "💻 *Shell Output:*\n```bash\n$result\n```")
-                        call.respond(HttpStatusCode.OK)
+                        call.respond(HttpStatusCode.OK, mapOf("response" to "💻 *Shell Output:*\n```bash\n$result\n```"))
                         return@post
                     }
 
-                    val statusMessageId = sendTelegramMessage(telegramBotToken, chatId, "⚙️ *Agent Initializing...*\n`Processing prompt`")
                     val history = ChatSessionManager.getHistory(clientId)
                     val fullPrompt = buildString {
                         for ((role, msg) in history) append("$role: $msg\n")
@@ -627,16 +623,23 @@ fun Application.configureRouting() {
                     }
 
                     val responseText = withContext(Dispatchers.Default) {
-                        AgentBridge.processPromptWithTelegramUpdates(prompt = fullPrompt, botToken = telegramBotToken, chatId = chatId, messageId = statusMessageId ?: 0L)
+                        AgentBridge.processPrompt(fullPrompt) { token ->
+                            // Optional token callback stream handler if needed
+                        }
                     }
 
-                    if (statusMessageId != null) editTelegramMessage(telegramBotToken, chatId, statusMessageId, "✅ *Task Completed*\n\n$responseText")
+                    val finalResponse = responseText.ifBlank { "✅ Task completed with no output." }
                     ChatSessionManager.appendMessage(clientId, "User", text)
-                    ChatSessionManager.appendMessage(clientId, "Assistant", responseText)
+                    ChatSessionManager.appendMessage(clientId, "Assistant", finalResponse)
+
+                    // Return JSON response back to Python script
+                    call.respond(HttpStatusCode.OK, mapOf("response" to finalResponse))
+                    return@post
                 }
-                call.respond(HttpStatusCode.OK)
+                
+                call.respond(HttpStatusCode.OK, mapOf("response" to "Received update with no text message."))
             } catch (e: Exception) {
-                call.respond(HttpStatusCode.InternalServerError, mapOf("status" to "error", "message" to (e.localizedMessage ?: "Unknown error")))
+                call.respond(HttpStatusCode.InternalServerError, mapOf("response" to "❌ Internal error: ${e.localizedMessage ?: "Unknown error"}"))
             }
         }
     }
