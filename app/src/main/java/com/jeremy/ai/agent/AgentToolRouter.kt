@@ -109,23 +109,27 @@ class AgentToolRouter(
                 }
                 "schedule_alarm" -> {
                     if (argValue.isBlank()) {
-                        "Error: Missing argument. Expected 'time | task prompt' (e.g., '20m | check logs')."
+                        "Error: Missing argument. Expected 'time | task prompt' (e.g., '10s | echo test')."
                     } else {
                         val parts = argValue.split("|", limit = 2)
-                        val timeSpec = parts.getOrNull(0)?.trim() ?: "10m"
-                        val promptTask = parts.getOrNull(1)?.trim() ?: timeSpec
-
-                        val delayMillis = parseTimeSpecToMillis(timeSpec)
-                        val triggerTime = System.currentTimeMillis() + delayMillis
-
-                        val chatId = TelegramChatContext.activeChatId ?: 0L
-                        val botToken = TelegramChatContext.botToken
-
-                        if (chatId != 0L && botToken != "YOUR_TELEGRAM_BOT_TOKEN") {
-                            CronJobManager.scheduleExactAlarm(context, botToken, chatId, promptTask, triggerTime)
-                            "Successfully scheduled alarm for prompt '$promptTask' in $timeSpec."
+                        if (parts.size < 2) {
+                            "Error: Invalid format. You must separate the time and prompt with a pipe (|). Example: '10s | echo test'."
                         } else {
-                            "Error: Active Telegram chat context missing for alarm scheduling."
+                            val timeSpec = parts[0].trim()
+                            val promptTask = parts[1].trim()
+
+                            val delayMillis = parseTimeSpecToMillis(timeSpec)
+                            val triggerTime = System.currentTimeMillis() + delayMillis
+
+                            val chatId = TelegramChatContext.activeChatId ?: 0L
+                            val botToken = TelegramChatContext.botToken
+
+                            if (chatId != 0L && botToken != "YOUR_TELEGRAM_BOT_TOKEN") {
+                                CronJobManager.scheduleExactAlarm(context, botToken, chatId, promptTask, triggerTime)
+                                "Successfully scheduled alarm for '$promptTask' in $timeSpec. Task is complete. Do not call this tool again."
+                            } else {
+                                "Error: Active Telegram chat context missing for alarm scheduling."
+                            }
                         }
                     }
                 }
