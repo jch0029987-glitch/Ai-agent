@@ -44,6 +44,8 @@ object TelegramApprovalStore {
 
 object ChatSessionManager {
     private val sessions = ConcurrentHashMap<String, MutableList<Pair<String, String>>>()
+    var lastActiveTelegramChatId: Long = 0L
+
     fun getHistory(clientId: String) = sessions.getOrPut(clientId) { mutableListOf() }
     fun clearSession(clientId: String) { sessions.remove(clientId) }
     fun appendMessage(clientId: String, role: String, content: String) {
@@ -456,14 +458,15 @@ fun Application.configureRouting() {
                             "schedule_alarm" -> {
                                 val timeSpec = arguments?.get("time")?.jsonPrimitive?.content ?: "10m"
                                 val promptTask = arguments?.get("prompt")?.jsonPrimitive?.content ?: "Scheduled task"
+                                val targetChatId = ChatSessionManager.lastActiveTelegramChatId
                                 val delayMillis = when {
                                     timeSpec.lowercase().contains("s") -> (timeSpec.filter { it.isDigit() }.toLongOrNull() ?: 10) * 1000
                                     timeSpec.lowercase().contains("h") -> (timeSpec.filter { it.isDigit() }.toLongOrNull() ?: 1) * 60 * 60 * 1000
                                     else -> (timeSpec.filter { it.isDigit() }.toLongOrNull() ?: 10) * 60 * 1000
                                 }
                                 val triggerTime = System.currentTimeMillis() + delayMillis
-                                CronJobManager.scheduleExactAlarm(ShellSessionManager.appContext, telegramBotToken, 0L, promptTask, triggerTime)
-                                "Successfully scheduled exact alarm for '$promptTask' in $timeSpec."
+                                CronJobManager.scheduleExactAlarm(ShellSessionManager.appContext, telegramBotToken, targetChatId, promptTask, triggerTime)
+                                "Successfully scheduled exact alarm for '$promptTask' in $timeSpec for chat $targetChatId."
                             }
                             "add_cron_job" -> {
                                 "Cron job task registered successfully."
@@ -578,6 +581,7 @@ fun Application.configureRouting() {
                 val chatId = message?.chat?.id
 
                 if (chatId != null && !text.isNullOrBlank()) {
+                    ChatSessionManager.lastActiveTelegramChatId = chatId
                     val clientId = "telegram-$chatId"
                     if (text.trim().equals("/reset", ignoreCase = true)) {
                         ChatSessionManager.clearSession(clientId)
