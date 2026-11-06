@@ -2,7 +2,6 @@ package com.jeremy.ai.agent
 
 import android.Manifest
 import android.app.AlarmManager
-import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
@@ -36,7 +35,6 @@ import kotlinx.serialization.json.Json
 import kotlin.time.Duration.Companion.seconds
 import com.jeremy.ai.backend.ShellSessionManager
 import com.jeremy.ai.backend.configureRouting
-import com.jeremy.ai.backend.AlarmReceiver
 
 class MainActivity : ComponentActivity() {
 
@@ -64,7 +62,6 @@ class MainActivity : ComponentActivity() {
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
-        // Enforce Android mandatory edge-to-edge layout display
         enableEdgeToEdge()
         super.onCreate(savedInstanceState)
         
@@ -72,7 +69,6 @@ class MainActivity : ComponentActivity() {
         checkAndRequestPermissions()
         checkAndRequestExactAlarmPermission()
 
-        // Bind application context for Termux Intent shell bridge
         ShellSessionManager.appContext = applicationContext
 
         startEmbeddedServer()
@@ -83,7 +79,7 @@ class MainActivity : ComponentActivity() {
                 Surface(
                     modifier = Modifier
                         .fillMaxSize()
-                        .safeDrawingPadding(), // Protects content from overlapping system bars & cutouts
+                        .safeDrawingPadding(),
                     color = MaterialTheme.colorScheme.background
                 ) {
                     AgentChatScreen(
@@ -109,18 +105,13 @@ class MainActivity : ComponentActivity() {
         try {
             if (ktorServer == null) {
                 ktorServer = embeddedServer(Netty, port = 8080) {
-                    // 1. Install WebSockets plugin for real-time token streaming routes
                     install(WebSockets) {
                         pingPeriod = 15.seconds
                         timeout = 15.seconds
                         maxFrameSize = Long.MAX_VALUE
                         masking = false
                     }
-
-                    // 2. Install Server-Sent Events (SSE) plugin required for official MCP transport
                     install(SSE)
-
-                    // 3. Install ContentNegotiation to parse JSON-RPC payloads (fixes 406 Not Acceptable)
                     install(ContentNegotiation) {
                         json(Json {
                             ignoreUnknownKeys = true
@@ -128,8 +119,6 @@ class MainActivity : ComponentActivity() {
                             prettyPrint = true
                         })
                     }
-
-                    // 4. Register application routing endpoints (including /mcp)
                     configureRouting()
                 }.start(wait = false)
                 Log.i("MainActivity", "Ktor Netty server successfully started on port 8080 with MCP & SSE support")
@@ -140,7 +129,7 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    override fun onDestroy() {
+    override -> onDestroy() {
         super.onDestroy()
         try {
             ktorServer?.stop(1000, 2000)
@@ -161,24 +150,6 @@ class MainActivity : ComponentActivity() {
                     startActivity(intent)
                 } catch (e: Exception) {
                     Log.e("MainActivity", "Failed to request exact alarm permission", e)
-                }
-            } else {
-                // Force Android to register/display app in the Alarms & reminders settings menu
-                try {
-                    val dummyIntent = Intent(this, AlarmReceiver::class.java).apply {
-                        putExtra("chat_id", 0L)
-                        putExtra("prompt", "init_probe")
-                    }
-                    val pendingIntent = PendingIntent.getBroadcast(
-                        this, 
-                        8888, 
-                        dummyIntent, 
-                        PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
-                    )
-                    // Set a far-future dummy alarm just to force OS menu population
-                    alarmManager.setExact(AlarmManager.RTC_WAKEUP, System.currentTimeMillis() + 86400000L, pendingIntent)
-                } catch (e: Exception) {
-                    Log.e("MainActivity", "Failed to force alarm registration probe", e)
                 }
             }
         }
