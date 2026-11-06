@@ -22,7 +22,7 @@
     <!-- Alarm & Boot Scheduling Permissions -->
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
     <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM" />
-    <uses-permission android:name="android.permission.USE_EXACT_ALARM" />
+    <!-- NOTE: Keep USE_EXACT_ALARM removed so the OS exposes the app in the user-facing Alarms & reminders menu -->
 
     <!-- System-Level Agent Features (Floating UI Overlays) -->
     <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
@@ -154,17 +154,17 @@
 
         <!-- Termux Callback Broadcast Receiver -->
         <receiver 
-            android:name="com.jeremy.ai.backend.TermuxResultReceiver"
+            android:name="com.jeremy.ai.agent.TermuxResultReceiver"
             android:exported="false" />
 
         <!-- Alarm Trigger Broadcast Receiver -->
         <receiver 
-            android:name="com.jeremy.ai.backend.AlarmReceiver"
+            android:name="com.jeremy.ai.agent.AlarmReceiver"
             android:exported="false" />
 
         <!-- System Boot & Package Update Receiver for Restoring Alarms -->
         <receiver 
-            android:name="com.jeremy.ai.backend.BootReceiver"
+            android:name="com.jeremy.ai.agent.BootReceiver"
             android:exported="true">
             <intent-filter>
                 <action android:name="android.intent.action.BOOT_COMPLETED" />
