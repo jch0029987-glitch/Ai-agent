@@ -6,32 +6,29 @@ import android.app.NotificationManager
 import android.app.Service
 import android.content.Intent
 import android.os.Build
-import android.os.Handler
 import android.os.IBinder
-import android.os.Looper
 import android.util.Log
-import android.widget.Toast
 import androidx.core.app.NotificationCompat
+import io.ktor.client.*
+import io.ktor.client.engine.cio.*
+import io.ktor.client.request.*
+import io.ktor.client.statement.*
+import io.ktor.http.*
 import kotlinx.coroutines.*
 import org.json.JSONObject
-import java.net.HttpURLConnection
-import java.net.URL
 
 class TelegramBridgeService : Service() {
 
     private val serviceScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
     private var lastUpdateId = 0L
+    private val client = HttpClient(CIO) {
+        expectSuccess = false
+    }
 
     companion object {
         private const val TAG = "TelegramBridge"
         private const val CHANNEL_ID = "TelegramBridgeChannel"
         private const val NOTIF_ID = 1337
-    }
-
-    private fun showToast(msg: String) {
-        Handler(Looper.getMainLooper()).post {
-            Toast.makeText(applicationContext, msg, Toast.LENGTH_SHORT).show()
-        }
     }
 
     override fun onCreate() {
@@ -45,11 +42,10 @@ class TelegramBridgeService : Service() {
         val botToken = BuildConfig.TELEGRAM_BOT_TOKEN
         if (botToken.isBlank() || botToken == "YOUR_TELEGRAM_BOT_TOKEN_HERE") {
             Log.e(TAG, "Telegram Bot Token is blank!")
-            showToast("ERROR: Telegram Bot Token is blank!")
             return START_NOT_STICKY
         }
 
-        Log.i(TAG, "Telegram Polling Starting...")
+        Log.i(TAG, "Telegram Ktor Polling Starting...")
         startPolling()
         return START_STICKY
     }
@@ -92,16 +88,17 @@ class TelegramBridgeService : Service() {
         val botToken = BuildConfig.TELEGRAM_BOT_TOKEN
         val allowedUserId = BuildConfig.TELEGRAM_ALLOWED_USER_ID
         
-        val urlString = "https://api.telegram.org/bot$botToken/getUpdates?offset=${lastUpdateId + 1}&timeout=30"
-        val url = URL(urlString)
-        val conn = url.openConnection() as HttpURLConnection
-        conn.requestMethod = "GET"
-        conn.connectTimeout = 35000
-        conn.readTimeout = 35000
+        val url = "https://api.telegram.org/bot$botToken/getUpdates?offset=${lastUpdateId + 1}&timeout=30"
+        
+        val response: HttpResponse = client.get(url) {
+            timeout {
+                requestTimeoutMillis = 35000
+                socketTimeoutMillis = 35000
+            }
+        }
 
-        val responseCode = conn.responseCode
-        if (responseCode == 200) {
-            val responseText = conn.inputStream.bufferedReader().use { it.readText() }
+        if (response.status == HttpStatusCode.OK) {
+            val responseText = response.bodyAsText()
             val json = JSONObject(responseText)
             if (json.optBoolean("ok")) {
                 val results = json.getJSONArray("result")
@@ -118,32 +115,28 @@ class TelegramBridgeService : Service() {
 
                         Log.i(TAG, "Received message: '$text' from sender: $senderId")
 
-                        // Security check against ALLOWED_USER_ID if configured
                         if (allowedUserId.isNotBlank() && senderId != allowedUserId) {
                             sendTelegramResponse(chatId, "⚠️ Unauthorized user ID: `$senderId`")
                             continue
                         }
 
                         if (text.isNotBlank()) {
-                            processRemoteCommand(chatId, text, botToken, update.getJSONObject("message").getLong("message_id"))
+                            processRemoteCommand(chatId, text, botToken, message.getLong("message_id"))
                         }
                     }
                 }
             }
         } else {
-            val err = conn.errorStream?.bufferedReader()?.use { it.readText() } ?: "Unknown"
-            Log.e(TAG, "Telegram HTTP Error $responseCode: $err")
+            Log.e(TAG, "Telegram HTTP Error ${response.status.value}: ${response.bodyAsText()}")
         }
     }
 
     private fun processRemoteCommand(chatId: String, prompt: String, botToken: String, messageId: Long) {
         serviceScope.launch {
-            // 1. Send typing indicator immediately
             sendChatAction(chatId, "typing")
             sendTelegramResponse(chatId, "⚙️ Processing request...")
 
             try {
-                // 2. Route via the dedicated Telegram webhook method in AgentBridge
                 val finalOutput = AgentBridge.processPromptWithTelegramUpdates(
                     prompt = prompt,
                     botToken = botToken,
@@ -162,49 +155,31 @@ class TelegramBridgeService : Service() {
     }
 
     private fun sendChatAction(chatId: String, action: String) {
-        try {
-            val botToken = BuildConfig.TELEGRAM_BOT_TOKEN
-            val url = URL("https://api.telegram.org/bot$botToken/sendChatAction")
-            val conn = url.openConnection() as HttpURLConnection
-            conn.requestMethod = "POST"
-            conn.setRequestProperty("Content-Type", "application/json")
-            conn.doOutput = true
-
-            val payload = JSONObject().apply {
-                put("chat_id", chatId)
-                put("action", action)
+        serviceScope.launch {
+            try {
+                val botToken = BuildConfig.TELEGRAM_BOT_TOKEN
+                client.post("https://api.telegram.org/bot$botToken/sendChatAction") {
+                    contentType(ContentType.Application.Json)
+                    setBody("{\"chat_id\": $chatId, \"action\": \"$action\"}")
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to send chat action", e)
             }
-
-            conn.outputStream.use { os ->
-                os.write(payload.toString().toByteArray(Charsets.UTF_8))
-            }
-            conn.responseCode
-        } catch (e: Exception) {
-            Log.e(TAG, "Failed to send chat action", e)
         }
     }
 
     private fun sendTelegramResponse(chatId: String, text: String) {
-        try {
-            val botToken = BuildConfig.TELEGRAM_BOT_TOKEN
-            val url = URL("https://api.telegram.org/bot$botToken/sendMessage")
-            val conn = url.openConnection() as HttpURLConnection
-            conn.requestMethod = "POST"
-            conn.setRequestProperty("Content-Type", "application/json")
-            conn.doOutput = true
-
-            val payload = JSONObject().apply {
-                put("chat_id", chatId)
-                put("text", text)
-                put("parse_mode", "Markdown")
+        serviceScope.launch {
+            try {
+                val botToken = BuildConfig.TELEGRAM_BOT_TOKEN
+                val escapedText = text.replace("\"", "\\\"").replace("\n", "\\n")
+                client.post("https://api.telegram.org/bot$botToken/sendMessage") {
+                    contentType(ContentType.Application.Json)
+                    setBody("{\"chat_id\": $chatId, \"text\": \"$escapedText\", \"parse_mode\": \"Markdown\"}")
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to send reply", e)
             }
-
-            conn.outputStream.use { os ->
-                os.write(payload.toString().toByteArray(Charsets.UTF_8))
-            }
-            conn.responseCode
-        } catch (e: Exception) {
-            Log.e(TAG, "Failed to send reply", e)
         }
     }
 
@@ -212,6 +187,7 @@ class TelegramBridgeService : Service() {
 
     override fun onDestroy() {
         super.onDestroy()
+        client.close()
         serviceScope.cancel()
     }
 }
