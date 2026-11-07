@@ -27,15 +27,7 @@ class BootReceiver : BroadcastReceiver() {
                     return
                 }
 
-                // 1. Restart background Ktor cron dispatcher loops
-                try {
-                    CronJobManager.startDispatcher(botToken)
-                    Log.i(TAG, "CronJobManager dispatcher successfully restarted.")
-                } catch (e: Exception) {
-                    Log.e(TAG, "Failed to start CronJobManager dispatcher: ${e.localizedMessage}")
-                }
-
-                // 2. Restore pending exact alarms from persistent storage/database
+                // Restore pending exact alarms from persistent storage/database
                 restorePendingAlarms(context, botToken)
 
             } catch (e: Exception) {
