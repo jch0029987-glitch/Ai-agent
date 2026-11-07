@@ -1,31 +1,18 @@
 <?xml version="1.0" encoding="utf-8"?>
 <network-security-config>
-    <!-- Base configuration applies to all connections unless overridden -->
+    <!-- Base configuration permits user CAs globally for debugging/proxies -->
     <base-config cleartextTrafficPermitted="false">
         <trust-anchors>
-            <!-- Trust system CAs -->
             <certificates src="system" />
-            <!-- Trust user-installed CAs (helpful for debugging tools and intercepting proxies) -->
             <certificates src="user" />
         </trust-anchors>
     </base-config>
 
-    <!-- Explicit configuration for Telegram API -->
-    <domain-config cleartextTrafficPermitted="false">
-        <domain includeSubdomains="true">api.telegram.org</domain>
-        <trust-anchors>
-            <certificates src="system" />
-            <certificates src="user" />
-        </trust-anchors>
-    </domain-config>
-
-    <!-- Domain-specific overrides for local development or custom APIs -->
+    <!-- Cleartext overrides for local development and local network bridges -->
     <domain-config cleartextTrafficPermitted="true">
-        <!-- Allow cleartext for localhost / emulator bridge -->
         <domain includeSubdomains="true">localhost</domain>
         <domain includeSubdomains="true">10.0.2.2</domain>
         <domain includeSubdomains="true">192.168.1.5</domain>
-        <!-- Add this entry for your TV companion app bridge IP -->
         <domain includeSubdomains="true">192.168.49.1</domain>
     </domain-config>
 </network-security-config>
