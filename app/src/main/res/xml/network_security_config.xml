@@ -15,7 +15,8 @@
         <!-- Allow cleartext for localhost / emulator bridge -->
         <domain includeSubdomains="true">localhost</domain>
         <domain includeSubdomains="true">10.0.2.2</domain>
-        <domain includeSubdomains="true">192.168.1.5</domain> <!-- Replace with your local dev IP if needed -->
+        <domain includeSubdomains="true">192.168.1.5</domain>
+        <!-- Add this entry for your TV companion app bridge IP -->
+        <domain includeSubdomains="true">192.168.49.1</domain>
     </domain-config>
 </network-security-config>
-
