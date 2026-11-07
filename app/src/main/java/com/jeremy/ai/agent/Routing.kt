@@ -2,6 +2,7 @@ package com.jeremy.ai.backend
 
 import com.jeremy.ai.agent.AgentBridge
 import com.jeremy.ai.agent.BuildConfig
+import com.jeremy.ai.agent.AlarmReceiver
 import io.ktor.http.*
 import io.ktor.serialization.kotlinx.json.*
 import io.ktor.server.application.*
@@ -146,9 +147,6 @@ class TermuxResultReceiver : BroadcastReceiver() {
     }
 }
 
-@Serializable
-data class ScheduledTask(val taskId: String, val chatId: Long, val prompt: String, val executeAtTimestamp: Long)
-
 // ==========================================
 // 2. OpenAI Spec & MCP DTO Models
 // ==========================================
@@ -208,7 +206,7 @@ private fun <T> executeTelegramRequest(block: () -> T?): T? {
     return null
 }
 
-private fun sendTelegramMessage(botToken: String, chatId: Long, text: String): Long? = executeTelegramRequest {
+internal fun sendTelegramMessage(botToken: String, chatId: Long, text: String): Long? = executeTelegramRequest {
     val url = java.net.URL("https://api.telegram.org/bot$botToken/sendMessage")
     val conn = url.openConnection() as java.net.HttpURLConnection
     conn.requestMethod = "POST"
@@ -222,7 +220,7 @@ private fun sendTelegramMessage(botToken: String, chatId: Long, text: String): L
     } else if (conn.responseCode == 429) throw java.io.IOException("Rate limited") else null
 }
 
-private fun editTelegramMessage(botToken: String, chatId: Long, messageId: Long, newText: String): Int? = executeTelegramRequest {
+internal fun editTelegramMessage(botToken: String, chatId: Long, messageId: Long, newText: String): Int? = executeTelegramRequest {
     val url = java.net.URL("https://api.telegram.org/bot$botToken/editMessageText")
     val conn = url.openConnection() as java.net.HttpURLConnection
     conn.requestMethod = "POST"
@@ -379,7 +377,31 @@ fun Application.configureRouting() {
                                     else -> (timeSpec.filter { it.isDigit() }.toLongOrNull() ?: 10) * 60 * 1000
                                 }
                                 val triggerTime = System.currentTimeMillis() + delayMillis
-                                CronJobManager.scheduleExactAlarm(ShellSessionManager.appContext, telegramBotToken, targetChatId, promptTask, triggerTime)
+
+                                // Schedule exact alarm via AlarmManager -> AlarmReceiver -> WorkManager
+                                val context = ShellSessionManager.appContext
+                                val alarmManager = context.getSystemService(Context.ALARM_SERVICE) as AlarmManager
+                                val intent = Intent(context, AlarmReceiver::class.java).apply {
+                                    putExtra("chat_id", targetChatId)
+                                    putExtra("prompt", promptTask)
+                                    putExtra("bot_token", telegramBotToken)
+                                }
+                                val pendingIntent = PendingIntent.getBroadcast(
+                                    context,
+                                    (targetChatId + triggerTime).toInt(),
+                                    intent,
+                                    PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+                                )
+                                try {
+                                    if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.S && !alarmManager.canScheduleExactAlarms()) {
+                                        alarmManager.set(AlarmManager.RTC_WAKEUP, triggerTime, pendingIntent)
+                                    } else {
+                                        alarmManager.setExactAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, triggerTime, pendingIntent)
+                                    }
+                                } catch (e: SecurityException) {
+                                    alarmManager.set(AlarmManager.RTC_WAKEUP, triggerTime, pendingIntent)
+                                }
+
                                 "Successfully scheduled exact alarm for '$promptTask' in $timeSpec for chat $targetChatId."
                             }
                             "add_cron_job" -> {
@@ -499,7 +521,7 @@ fun Application.configureRouting() {
                     val clientId = "telegram-$chatId"
                     if (text.trim().equals("/reset", ignoreCase = true)) {
                         ChatSessionManager.clearSession(clientId)
-                        call.respond(HttpStatusCode.OK, mapOf("response" to "🔄 Session history cleared."))
+                        call.respond(HttpStatusCode.OK, mapOf("response" => "🔄 Session history cleared."))
                         return@post
                     }
 
