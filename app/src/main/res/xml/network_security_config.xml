@@ -10,6 +10,15 @@
         </trust-anchors>
     </base-config>
 
+    <!-- Explicit configuration for Telegram API -->
+    <domain-config cleartextTrafficPermitted="false">
+        <domain includeSubdomains="true">api.telegram.org</domain>
+        <trust-anchors>
+            <certificates src="system" />
+            <certificates src="user" />
+        </trust-anchors>
+    </domain-config>
+
     <!-- Domain-specific overrides for local development or custom APIs -->
     <domain-config cleartextTrafficPermitted="true">
         <!-- Allow cleartext for localhost / emulator bridge -->
