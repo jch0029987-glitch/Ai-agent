@@ -10,7 +10,7 @@ import android.os.IBinder
 import android.util.Log
 import androidx.core.app.NotificationCompat
 import io.ktor.client.*
-import io.ktor.client.engine.cio.*
+import io.ktor.client.engine.android.*
 import io.ktor.client.plugins.*
 import io.ktor.client.request.*
 import io.ktor.client.statement.*
@@ -22,7 +22,9 @@ class TelegramBridgeService : Service() {
 
     private val serviceScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
     private var lastUpdateId = 0L
-    private val client = HttpClient(CIO) {
+    
+    // Switch engine from CIO to Android to seamlessly align with Android network security configs
+    private val client = HttpClient(Android) {
         expectSuccess = false
         install(HttpTimeout)
     }
