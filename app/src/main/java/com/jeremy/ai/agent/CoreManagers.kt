@@ -9,9 +9,13 @@ import android.os.Build
 import android.os.Bundle
 import android.os.Environment
 import android.util.Log
+import androidx.work.CoroutineWorker
+import androidx.work.Data
+import androidx.work.OneTimeWorkRequestBuilder
+import androidx.work.WorkManager
+import androidx.work.WorkerParameters
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.GlobalScope
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.serialization.Serializable
 import java.io.File
@@ -138,7 +142,38 @@ class TermuxResultReceiver : BroadcastReceiver() {
 }
 
 // ==========================================
-// 4. Scheduled Tasks, Alarms & Cron Manager
+// 4. WorkManager Background Worker
+// ==========================================
+class AgentWorkRequest(
+    context: Context,
+    params: WorkerParameters
+) : CoroutineWorker(context, params) {
+
+    override suspend fun doWork(): Result {
+        val prompt = inputData.getString("prompt") ?: return Result.failure()
+        val chatId = inputData.getLong("chat_id", 0L)
+        val botToken = inputData.getString("bot_token") ?: BuildConfig.TELEGRAM_BOT_TOKEN
+
+        if (chatId == 0L || botToken.isBlank()) {
+            return Result.failure()
+        }
+
+        return try {
+            AgentBridge.processPromptWithTelegramUpdates(
+                prompt = prompt,
+                botToken = botToken,
+                chatId = chatId,
+                messageId = 0L
+            )
+            Result.success()
+        } catch (e: Exception) {
+            Result.retry()
+        }
+    }
+}
+
+// ==========================================
+// 5. Scheduled Tasks, Alarms & Cron Manager
 // ==========================================
 @Serializable
 data class ScheduledTask(
@@ -154,16 +189,18 @@ class AlarmReceiver : BroadcastReceiver() {
         val prompt = intent.getStringExtra("prompt") ?: return
         val botToken = intent.getStringExtra("bot_token") ?: BuildConfig.TELEGRAM_BOT_TOKEN
 
-        GlobalScope.launch(Dispatchers.IO) {
-            try {
-                AgentBridge.processPromptWithTelegramUpdates(
-                    prompt = prompt,
-                    botToken = botToken,
-                    chatId = chatId,
-                    messageId = 0L
-                )
-            } catch (e: Exception) {}
-        }
+        // Enqueue background work via WorkManager for reliable execution outside Doze mode limits
+        val inputData = Data.Builder()
+            .putString("prompt", prompt)
+            .putLong("chat_id", chatId)
+            .putString("bot_token", botToken)
+            .build()
+
+        val workRequest = OneTimeWorkRequestBuilder<AgentWorkRequest>()
+            .setInputData(inputData)
+            .build()
+
+        WorkManager.getInstance(context).enqueue(workRequest)
     }
 }
 
@@ -205,27 +242,8 @@ object CronJobManager {
         }
     }
 
+    // WorkManager handles execution queue management natively.
     fun startDispatcher(botToken: String) {
-        GlobalScope.launch(Dispatchers.IO) {
-            while (true) {
-                val now = System.currentTimeMillis()
-                val iterator = scheduledTasks.iterator()
-                while (iterator.hasNext()) {
-                    val task = iterator.next()
-                    if (now >= task.executeAtTimestamp) {
-                        try {
-                            AgentBridge.processPromptWithTelegramUpdates(
-                                prompt = task.prompt,
-                                botToken = botToken,
-                                chatId = task.chatId,
-                                messageId = 0L
-                            )
-                        } catch (e: Exception) {}
-                        iterator.remove()
-                    }
-                }
-                delay(10000L)
-            }
-        }
+        // No-op
     }
 }
