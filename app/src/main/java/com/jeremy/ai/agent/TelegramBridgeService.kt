@@ -11,6 +11,7 @@ import android.util.Log
 import androidx.core.app.NotificationCompat
 import io.ktor.client.*
 import io.ktor.client.engine.cio.*
+import io.ktor.client.plugins.*
 import io.ktor.client.request.*
 import io.ktor.client.statement.*
 import io.ktor.http.*
@@ -23,6 +24,7 @@ class TelegramBridgeService : Service() {
     private var lastUpdateId = 0L
     private val client = HttpClient(CIO) {
         expectSuccess = false
+        install(HttpTimeout)
     }
 
     companion object {
@@ -158,9 +160,14 @@ class TelegramBridgeService : Service() {
         serviceScope.launch {
             try {
                 val botToken = BuildConfig.TELEGRAM_BOT_TOKEN
+                val payload = JSONObject().apply {
+                    put("chat_id", chatId)
+                    put("action", action)
+                }.toString()
+
                 client.post("https://api.telegram.org/bot$botToken/sendChatAction") {
                     contentType(ContentType.Application.Json)
-                    setBody("{\"chat_id\": $chatId, \"action\": \"$action\"}")
+                    setBody(payload)
                 }
             } catch (e: Exception) {
                 Log.e(TAG, "Failed to send chat action", e)
@@ -172,10 +179,15 @@ class TelegramBridgeService : Service() {
         serviceScope.launch {
             try {
                 val botToken = BuildConfig.TELEGRAM_BOT_TOKEN
-                val escapedText = text.replace("\"", "\\\"").replace("\n", "\\n")
+                val payload = JSONObject().apply {
+                    put("chat_id", chatId)
+                    put("text", text)
+                    put("parse_mode", "Markdown")
+                }.toString()
+
                 client.post("https://api.telegram.org/bot$botToken/sendMessage") {
                     contentType(ContentType.Application.Json)
-                    setBody("{\"chat_id\": $chatId, \"text\": \"$escapedText\", \"parse_mode\": \"Markdown\"}")
+                    setBody(payload)
                 }
             } catch (e: Exception) {
                 Log.e(TAG, "Failed to send reply", e)
