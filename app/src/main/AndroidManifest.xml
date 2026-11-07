@@ -113,7 +113,8 @@
         <service
             android:name=".TelegramBridgeService"
             android:enabled="true"
-            android:exported="false" />
+            android:exported="false"
+            android:foregroundServiceType="dataSync" />
 
         <!-- Screen Content & UI Automation Accessibility Bridge -->
         <service
