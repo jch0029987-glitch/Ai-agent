@@ -13,7 +13,7 @@ import java.util.concurrent.CompletableFuture
 
 object TelegramChatContext {
     var activeChatId: Long? = null
-    var botToken: String = "YOUR_TELEGRAM_BOT_TOKEN"
+    var botToken: String = ""
 }
 
 class AgentToolRouter(
@@ -122,13 +122,40 @@ class AgentToolRouter(
                             val triggerTime = System.currentTimeMillis() + delayMillis
 
                             val chatId = TelegramChatContext.activeChatId ?: 0L
-                            val botToken = TelegramChatContext.botToken
-
-                            if (chatId != 0L && botToken != "YOUR_TELEGRAM_BOT_TOKEN") {
-                                CronJobManager.scheduleExactAlarm(context, botToken, chatId, promptTask, triggerTime)
-                                "Successfully scheduled alarm for '$promptTask' in $timeSpec.\nACTION REQUIRED: Now you MUST output:\nTOOL: finish\nARG: Alarm successfully scheduled for $timeSpec."
+                            
+                            // Fallback to BuildConfig token if context token is blank
+                            val botToken = if (TelegramChatContext.botToken.isNotBlank()) {
+                                TelegramChatContext.botToken
                             } else {
-                                "Error: Active Telegram chat context missing for alarm scheduling."
+                                try {
+                                    BuildConfig.TELEGRAM_BOT_TOKEN
+                                } catch (e: Exception) {
+                                    ""
+                                }
+                            }
+
+                            if (chatId != 0L && botToken.isNotBlank()) {
+                                CronJobManager.scheduleExactAlarm(context, botToken, chatId, promptTask, triggerTime)
+
+                                // Direct dispatch to Telegram so it replies instantly
+                                try {
+                                    val replyText = "Successfully scheduled alarm for '$promptTask' in $timeSpec."
+                                    val url = java.net.URL("https://api.telegram.org/bot$botToken/sendMessage")
+                                    val conn = url.openConnection() as java.net.HttpURLConnection
+                                    conn.requestMethod = "POST"
+                                    conn.setRequestProperty("Content-Type", "application/json")
+                                    conn.doOutput = true
+                                    val escaped = replyText.replace("\"", "\\\"")
+                                    val payload = "{\"chat_id\": $chatId, \"text\": \"$escaped\"}"
+                                    conn.outputStream.write(payload.toByteArray())
+                                    conn.responseCode
+                                } catch (e: Exception) {
+                                    // Suppress network dispatch exceptions
+                                }
+
+                                "Successfully scheduled alarm for '$promptTask' in $timeSpec."
+                            } else {
+                                "Error: Active Telegram chat context or bot token missing for alarm scheduling."
                             }
                         }
                     }
@@ -256,10 +283,19 @@ class AgentToolRouter(
 
     private suspend fun requestUserApproval(toolName: String, args: String): Boolean = withContext(Dispatchers.IO) {
         val chatId = TelegramChatContext.activeChatId
-        val botToken = TelegramChatContext.botToken
+        
+        val botToken = if (TelegramChatContext.botToken.isNotBlank()) {
+            TelegramChatContext.botToken
+        } else {
+            try {
+                BuildConfig.TELEGRAM_BOT_TOKEN
+            } catch (e: Exception) {
+                ""
+            }
+        }
 
-        // If no Telegram chat session is currently active, default to auto-approve for local app tests
-        if (chatId == null || botToken == "YOUR_TELEGRAM_BOT_TOKEN") {
+        // If no Telegram chat session or token is available, default to auto-approve for local app tests
+        if (chatId == null || botToken.isBlank()) {
             return@withContext true
         }
 
