@@ -526,7 +526,7 @@ fun Application.configureRouting() {
                     }
 
                     if (text.startsWith("/shell ")) {
-                        val cmd = text.removePrefix("/shell").trend().trim()
+                        val cmd = text.removePrefix("/shell").trim()
                         val result = ShellSessionManager.executeCommand(ShellSessionManager.appContext, chatId, cmd)
                         call.respond(HttpStatusCode.OK, mapOf("response" to "💻 *Shell Output:*\n```bash\n$result\n```"))
                         return@post
