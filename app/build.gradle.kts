@@ -115,7 +115,7 @@ dependencies {
     implementation("io.ktor:ktor-client-core:3.0.0")
     implementation("io.ktor:ktor-client-cio:3.0.0")
     implementation("io.ktor:ktor-client-content-negotiation:3.0.0")
-
+    implementation("io.ktor:ktor-client-android:3.0.3")
     // Ktor Server (for local-hosted remote access endpoints)
     implementation("io.ktor:ktor-server-core:3.0.0")
     implementation("io.ktor:ktor-server-netty:3.0.0")
