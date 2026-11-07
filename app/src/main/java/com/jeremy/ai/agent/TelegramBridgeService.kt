@@ -16,7 +16,6 @@ class TelegramBridgeService : Service() {
 
     companion object {
         private const val TAG = "TelegramBridge"
-        // Dynamically injected via BuildConfig from local.properties
         private val BOT_TOKEN = BuildConfig.TELEGRAM_BOT_TOKEN
         private val ALLOWED_USER_ID = BuildConfig.TELEGRAM_ALLOWED_USER_ID
     }
@@ -39,8 +38,8 @@ class TelegramBridgeService : Service() {
                 try {
                     pollUpdates()
                 } catch (e: Exception) {
-                    Log.e(TAG, "Polling error: ${e.localizedMessage}")
-                    delay(5000) // Wait 5 seconds before retrying on network drop
+                    Log.e(TAG, "Polling error: ${e.localizedMessage}", e)
+                    delay(5000)
                 }
             }
         }
@@ -65,12 +64,13 @@ class TelegramBridgeService : Service() {
 
                     if (update.has("message")) {
                         val message = update.getJSONObject("message")
-                        val fromUser = message.getJSONObject("from")
-                        val senderId = fromUser.getLong("id").toString()
+                        val fromUser = message.optJSONObject("from")
+                        val senderId = fromUser?.getLong("id")?.toString() ?: ""
                         val chatId = message.getJSONObject("chat").getLong("id").toString()
                         val text = message.optString("text", "")
 
-                        // Security Guardrail: Reject messages from unauthorized Telegram users
+                        Log.i(TAG, "Received message from sender $senderId: $text")
+
                         if (ALLOWED_USER_ID.isNotBlank() && senderId != ALLOWED_USER_ID) {
                             sendTelegramResponse(chatId, "⚠️ Unauthorized user. Execution blocked.")
                             continue
@@ -82,20 +82,27 @@ class TelegramBridgeService : Service() {
                     }
                 }
             }
+        } else {
+            Log.w(TAG, "Telegram getUpdates failed with response code: ${conn.responseCode}")
         }
     }
 
     private fun processRemoteCommand(chatId: String, prompt: String) {
         serviceScope.launch {
-            sendTelegramResponse(chatId, "🤖 *Agent processing prompt:* \"$prompt\"...")
+            sendTelegramResponse(chatId, "🤖 Agent processing prompt: \"$prompt\"...")
 
-            // Route directly into our LiteRT-LM local agent engine
-            val finalOutput = AgentBridge.processPrompt(prompt) { token ->
-                // Optional: Stream tokens or updates
+            try {
+                val finalOutput = AgentBridge.processPrompt(prompt) { token ->
+                    // Optional token streaming
+                }
+
+                val responseText = if (!finalOutput.isNullOrBlank()) finalOutput else "✅ Task completed."
+                Log.i(TAG, "Agent finished. Sending response to chat $chatId: $responseText")
+                sendTelegramResponse(chatId, responseText)
+            } catch (e: Exception) {
+                Log.e(TAG, "Error processing prompt through AgentBridge", e)
+                sendTelegramResponse(chatId, "🔴 Agent Error: ${e.localizedMessage}")
             }
-
-            // Return the full execution log and result to Telegram
-            sendTelegramResponse(chatId, finalOutput)
         }
     }
 
@@ -115,7 +122,11 @@ class TelegramBridgeService : Service() {
             conn.outputStream.use { os ->
                 os.write(payload.toString().toByteArray(Charsets.UTF_8))
             }
-            conn.responseCode // Execute request
+            val responseCode = conn.responseCode
+            if (responseCode != 200) {
+                val errBody = conn.errorStream?.bufferedReader()?.use { it.readText() } ?: "Unknown error"
+                Log.e(TAG, "Failed to send Telegram message. Code: $responseCode, Body: $errBody")
+            }
         } catch (e: Exception) {
             Log.e(TAG, "Failed to send response back to Telegram", e)
         }
@@ -123,7 +134,7 @@ class TelegramBridgeService : Service() {
 
     override fun onBind(intent: Intent?): IBinder? = null
 
-    override fun onDestroy() {
+    override onDestroy() {
         super.onDestroy()
         serviceScope.cancel()
     }
