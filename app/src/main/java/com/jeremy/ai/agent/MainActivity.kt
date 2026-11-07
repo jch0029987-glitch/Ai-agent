@@ -32,6 +32,9 @@ import io.ktor.server.netty.Netty
 import io.ktor.server.plugins.contentnegotiation.*
 import io.ktor.server.sse.SSE
 import io.ktor.server.websocket.*
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 import kotlinx.serialization.json.Json
 import kotlin.time.Duration.Companion.seconds
 import com.jeremy.ai.backend.ShellSessionManager
@@ -40,6 +43,7 @@ import com.jeremy.ai.backend.configureRouting
 class MainActivity : ComponentActivity() {
 
     private var ktorServer: EmbeddedServer<*, *>? = null
+    private var agentManager: AgentManager? = null
 
     private val requiredPermissions = arrayOf(
         Manifest.permission.CAMERA,
@@ -71,6 +75,12 @@ class MainActivity : ComponentActivity() {
         checkAndRequestExactAlarmPermission()
 
         ShellSessionManager.appContext = applicationContext
+
+        // 1. Initialize AgentManager and load LiteRT-LM engine from storage in background
+        agentManager = AgentManager(this)
+        CoroutineScope(Dispatchers.IO).launch {
+            agentManager?.setupEngineFromStorage("gemma-4-E2B-it.litertlm")
+        }
 
         startEmbeddedServer()
         startTelegramBridge()
@@ -138,6 +148,12 @@ class MainActivity : ComponentActivity() {
             ktorServer = null
         } catch (e: Exception) {
             Log.e("MainActivity", "Error stopping Ktor server", e)
+        }
+        try {
+            agentManager?.shutdown()
+            agentManager = null
+        } catch (e: Exception) {
+            Log.e("MainActivity", "Error shutting down AgentManager", e)
         }
     }
 
