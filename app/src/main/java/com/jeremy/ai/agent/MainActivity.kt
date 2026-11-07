@@ -9,6 +9,8 @@ import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import android.os.PowerManager
 import android.provider.Settings
 import android.util.Log
@@ -24,6 +26,10 @@ import androidx.compose.material3.Surface
 import androidx.compose.ui.Modifier
 import androidx.core.content.ContextCompat
 import com.jeremy.ai.agent.ui.AgentChatScreen
+import io.ktor.client.*
+import io.ktor.client.engine.cio.*
+import io.ktor.client.request.*
+import io.ktor.client.statement.*
 import io.ktor.serialization.kotlinx.json.*
 import io.ktor.server.application.install
 import io.ktor.server.engine.EmbeddedServer
@@ -84,6 +90,27 @@ class MainActivity : ComponentActivity() {
 
         startEmbeddedServer()
         startTelegramBridge()
+
+        // --- DIRECT STARTUP TELEGRAM API TEST ---
+        CoroutineScope(Dispatchers.IO).launch {
+            try {
+                val client = HttpClient(CIO)
+                val token = BuildConfig.TELEGRAM_BOT_TOKEN
+                val url = "https://api.telegram.org/bot$token/getMe"
+                
+                val response = client.get(url).bodyAsText()
+                client.close()
+                
+                Handler(Looper.getMainLooper()).post {
+                    Toast.makeText(this@MainActivity, "API Test OK: $response", Toast.LENGTH_LONG).show()
+                }
+            } catch (e: Exception) {
+                Handler(Looper.getMainLooper()).post {
+                    Toast.makeText(this@MainActivity, "API Test Failed: ${e.localizedMessage}", Toast.LENGTH_LONG).show()
+                }
+            }
+        }
+        // ----------------------------------------
 
         setContent {
             MaterialTheme {
