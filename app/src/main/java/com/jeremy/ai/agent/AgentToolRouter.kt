@@ -1,9 +1,11 @@
 package com.jeremy.ai.agent
 
+import android.app.AlarmManager
+import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
+import android.os.Build
 import android.os.Environment
-import com.jeremy.ai.backend.CronJobManager
 import com.jeremy.ai.backend.TelegramApprovalStore
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -135,7 +137,7 @@ class AgentToolRouter(
                             }
 
                             if (chatId != 0L && botToken.isNotBlank()) {
-                                CronJobManager.scheduleExactAlarm(context, botToken, chatId, promptTask, triggerTime)
+                                scheduleAlarmDirect(context, botToken, chatId, promptTask, triggerTime)
 
                                 // Direct dispatch to Telegram so it replies instantly
                                 try {
@@ -263,6 +265,36 @@ class AgentToolRouter(
 
         } catch (e: Exception) {
             "Execution Error: ${e.localizedMessage}\n\nRaw Output:\n$rawOutput"
+        }
+    }
+
+    private fun scheduleAlarmDirect(context: Context, botToken: String, chatId: Long, prompt: String, triggerAtMillis: Long) {
+        val alarmManager = context.getSystemService(Context.ALARM_SERVICE) as AlarmManager
+        val intent = Intent(context, AlarmReceiver::class.java).apply {
+            putExtra("chat_id", chatId)
+            putExtra("prompt", prompt)
+            putExtra("bot_token", botToken)
+        }
+
+        val pendingIntent = PendingIntent.getBroadcast(
+            context,
+            (chatId + triggerAtMillis).toInt(),
+            intent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S && !alarmManager.canScheduleExactAlarms()) {
+                alarmManager.set(AlarmManager.RTC_WAKEUP, triggerAtMillis, pendingIntent)
+            } else {
+                alarmManager.setExactAndAllowWhileIdle(
+                    AlarmManager.RTC_WAKEUP,
+                    triggerAtMillis,
+                    pendingIntent
+                )
+            }
+        } catch (e: SecurityException) {
+            alarmManager.set(AlarmManager.RTC_WAKEUP, triggerAtMillis, pendingIntent)
         }
     }
 
