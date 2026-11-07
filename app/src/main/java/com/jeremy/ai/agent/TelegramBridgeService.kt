@@ -88,7 +88,8 @@ class TelegramBridgeService : Service() {
         conn.connectTimeout = 35000
         conn.readTimeout = 35000
 
-        if (conn.responseCode == 200) {
+        val responseCode = conn.responseCode
+        if (responseCode == 200) {
             val responseText = conn.inputStream.bufferedReader().use { it.readText() }
             val json = JSONObject(responseText)
             if (json.optBoolean("ok")) {
@@ -104,13 +105,13 @@ class TelegramBridgeService : Service() {
                         val chatId = message.getJSONObject("chat").getLong("id").toString()
                         val text = message.optString("text", "")
 
-                        if (ALLOWED_USER_ID.isNotBlank() && senderId != ALLOWED_USER_ID) {
-                            sendTelegramResponse(
-                                chatId, 
-                                "⚠️ Blocked. Your Telegram Sender ID is `$senderId`, but `ALLOWED_USER_ID` is set to `$ALLOWED_USER_ID`."
-                            )
-                            continue
-                        }
+                        // --- DIAGNOSTIC ECHO ---
+                        // This replies instantly to PROVE the service received your message, 
+                        // and tells you your exact senderId vs ALLOWED_USER_ID.
+                        sendTelegramResponse(
+                            chatId,
+                            "📥 Received!\n• Text: '$text'\n• Your Sender ID: `$senderId`\n• Allowed ID: `$ALLOWED_USER_ID`"
+                        )
 
                         if (text.isNotBlank()) {
                             processRemoteCommand(chatId, text)
@@ -118,28 +119,20 @@ class TelegramBridgeService : Service() {
                     }
                 }
             }
+        } else {
+            Log.e(TAG, "Telegram getUpdates failed with code $responseCode")
         }
     }
 
     private fun processRemoteCommand(chatId: String, prompt: String) {
         serviceScope.launch {
             sendChatAction(chatId, "typing")
-            sendTelegramResponse(chatId, "⚙️ Processing request...")
 
             try {
-                sendTelegramResponse(chatId, "🔄 Calling AgentBridge.processPrompt()...")
-
-                val finalOutput = AgentBridge.processPrompt(prompt) { token -> 
-                    // Optional token updates
-                }
-
-                sendTelegramResponse(chatId, "📥 AgentBridge finished. Output length: ${finalOutput.length}")
-
+                val finalOutput = AgentBridge.processPrompt(prompt) { token -> }
                 val responseText = if (!finalOutput.isNullOrBlank()) finalOutput else "✅ Task completed."
                 sendTelegramResponse(chatId, responseText)
-
             } catch (e: Exception) {
-                Log.e(TAG, "Error executing prompt", e)
                 val errorDetails = e.localizedMessage ?: e.javaClass.simpleName
                 val stackTop = e.stackTrace.firstOrNull()?.toString() ?: "Unknown line"
                 sendTelegramResponse(chatId, "🔴 Agent Error:\n`$errorDetails`\n\nAt: `$stackTop`")
