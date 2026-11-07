@@ -35,8 +35,7 @@ class TelegramBridgeService : Service() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         if (BOT_TOKEN.isBlank() || BOT_TOKEN == "YOUR_TELEGRAM_BOT_TOKEN_HERE") {
-            Log.e(TAG, "Telegram BOT_TOKEN is missing or unconfigured in local.properties. Service stopping.")
-            stopSelf()
+            Log.e(TAG, "Telegram BOT_TOKEN is missing or unconfigured in local.properties.")
             return START_NOT_STICKY
         }
 
@@ -106,7 +105,10 @@ class TelegramBridgeService : Service() {
                         val text = message.optString("text", "")
 
                         if (ALLOWED_USER_ID.isNotBlank() && senderId != ALLOWED_USER_ID) {
-                            sendTelegramResponse(chatId, "⚠️ Unauthorized user. Execution blocked.")
+                            sendTelegramResponse(
+                                chatId, 
+                                "⚠️ Blocked. Your Telegram Sender ID is `$senderId`, but `ALLOWED_USER_ID` is set to `$ALLOWED_USER_ID`."
+                            )
                             continue
                         }
 
@@ -121,18 +123,19 @@ class TelegramBridgeService : Service() {
 
     private fun processRemoteCommand(chatId: String, prompt: String) {
         serviceScope.launch {
-            // Trigger Telegram typing indicator right away
+            // Trigger the Telegram "typing" indicator immediately
             sendChatAction(chatId, "typing")
 
             try {
-                val finalOutput = AgentBridge.processPrompt(prompt) { token -> 
-                    // Optional token updates
-                }
+                val finalOutput = AgentBridge.processPrompt(prompt) { token -> }
                 val responseText = if (!finalOutput.isNullOrBlank()) finalOutput else "✅ Task completed."
                 sendTelegramResponse(chatId, responseText)
             } catch (e: Exception) {
                 Log.e(TAG, "Error executing prompt", e)
-                sendTelegramResponse(chatId, "🔴 Agent Error: ${e.localizedMessage}")
+                // Print the exact error stack trace or message straight to Telegram chat
+                val errorDetails = e.localizedMessage ?: e.javaClass.simpleName
+                val stackTop = e.stackTrace.firstOrNull()?.toString() ?: "Unknown line"
+                sendTelegramResponse(chatId, "🔴 Agent Error:\n`$errorDetails`\n\nAt: `$stackTop`")
             }
         }
     }
@@ -170,6 +173,7 @@ class TelegramBridgeService : Service() {
             val payload = JSONObject().apply {
                 put("chat_id", chatId)
                 put("text", text)
+                put("parse_mode", "Markdown")
             }
 
             conn.outputStream.use { os ->
