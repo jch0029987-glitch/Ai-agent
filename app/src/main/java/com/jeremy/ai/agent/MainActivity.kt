@@ -36,7 +36,6 @@ import kotlinx.serialization.json.Json
 import kotlin.time.Duration.Companion.seconds
 import com.jeremy.ai.backend.ShellSessionManager
 import com.jeremy.ai.backend.configureRouting
-// AlarmReceiver is in the same package (com.jeremy.ai.agent), so no separate backend import is required for it.
 
 class MainActivity : ComponentActivity() {
 
@@ -106,7 +105,8 @@ class MainActivity : ComponentActivity() {
     private fun startEmbeddedServer() {
         try {
             if (ktorServer == null) {
-                ktorServer = embeddedServer(Netty, port = 8080) {
+                // Bound to 0.0.0.0 to accept remote connections from local network clients (like Google TV)
+                ktorServer = embeddedServer(Netty, port = 8080, host = "0.0.0.0") {
                     install(WebSockets) {
                         pingPeriod = 15.seconds
                         timeout = 15.seconds
@@ -123,7 +123,7 @@ class MainActivity : ComponentActivity() {
                     }
                     configureRouting()
                 }.start(wait = false)
-                Log.i("MainActivity", "Ktor Netty server successfully started on port 8080 with MCP & SSE support")
+                Log.i("MainActivity", "Ktor Netty server successfully started on 0.0.0.0:8080 with MCP & SSE support")
             }
         } catch (e: Exception) {
             Log.e("MainActivity", "Failed to start embedded Ktor server", e)
@@ -145,7 +145,6 @@ class MainActivity : ComponentActivity() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
             val alarmManager = getSystemService(Context.ALARM_SERVICE) as AlarmManager
             
-            // Register an initialization probe intent to guarantee visibility in Alarms & reminders
             try {
                 val dummyIntent = Intent(this, AlarmReceiver::class.java).apply {
                     putExtra("chat_id", 0L)
