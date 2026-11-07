@@ -596,26 +596,35 @@ fun Application.configureRouting() {
                         return@post
                     }
 
-                    val history = ChatSessionManager.getHistory(clientId)
-                    val fullPrompt = buildString {
-                        for ((role, msg) in history) append("$role: $msg\n")
-                        append("User: $text\nAssistant:")
+                    // Respond immediately to Python so it never hangs or times out
+                    call.respond(HttpStatusCode.OK, mapOf("response" to "⚙️ Processing request..."))
+
+                    // Execute the multi-step agent loop asynchronously in the background
+                    GlobalScope.launch(Dispatchers.Default) {
+                        try {
+                            val history = ChatSessionManager.getHistory(clientId)
+                            val fullPrompt = buildString {
+                                for ((role, msg) in history) append("$role: $msg\n")
+                                append("User: $text\nAssistant:")
+                            }
+
+                            val responseText = AgentBridge.processPromptWithTelegramUpdates(
+                                prompt = fullPrompt,
+                                botToken = telegramBotToken,
+                                chatId = chatId,
+                                messageId = 0L
+                            )
+
+                            val finalResponse = responseText.ifBlank { "✅ Task completed with no output." }
+                            ChatSessionManager.appendMessage(clientId, "User", text)
+                            ChatSessionManager.appendMessage(clientId, "Assistant", finalResponse)
+
+                            // Push final response directly to Telegram chat
+                            sendTelegramMessage(telegramBotToken, chatId, finalResponse)
+                        } catch (e: Exception) {
+                            sendTelegramMessage(telegramBotToken, chatId, "❌ Error executing task: ${e.localizedMessage}")
+                        }
                     }
-
-                    val responseText = withContext(Dispatchers.Default) {
-                        AgentBridge.processPromptWithTelegramUpdates(
-                            prompt = fullPrompt,
-                            botToken = telegramBotToken,
-                            chatId = chatId,
-                            messageId = 0L
-                        )
-                    }
-
-                    val finalResponse = responseText.ifBlank { "✅ Task completed with no output." }
-                    ChatSessionManager.appendMessage(clientId, "User", text)
-                    ChatSessionManager.appendMessage(clientId, "Assistant", finalResponse)
-
-                    call.respond(HttpStatusCode.OK, mapOf("response" to finalResponse))
                     return@post
                 }
                 
