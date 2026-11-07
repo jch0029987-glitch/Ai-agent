@@ -142,7 +142,50 @@ class TermuxResultReceiver : BroadcastReceiver() {
 }
 
 // ==========================================
-// 4. WorkManager Background Worker
+// 4. Telegram HTTP Request Helpers
+// ==========================================
+private fun <T> executeTelegramRequest(block: () -> T?): T? {
+    var maxRetries = 3
+    var delayMs = 1000L
+    while (maxRetries > 0) {
+        try { return block() } catch (e: Exception) {
+            maxRetries--
+            if (maxRetries == 0) break
+            try { Thread.sleep(delayMs) } catch (_: Exception) {}
+            delayMs *= 2
+        }
+    }
+    return null
+}
+
+internal fun sendTelegramMessage(botToken: String, chatId: Long, text: String): Long? = executeTelegramRequest {
+    val url = java.net.URL("https://api.telegram.org/bot$botToken/sendMessage")
+    val conn = url.openConnection() as java.net.HttpURLConnection
+    conn.requestMethod = "POST"
+    conn.setRequestProperty("Content-Type", "application/json")
+    conn.doOutput = true
+    val payload = "{\"chat_id\": $chatId, \"text\": \"${text.replace("\"", "\\\"").replace("\n", "\\n")}\", \"parse_mode\": \"Markdown\"}"
+    conn.outputStream.write(payload.toByteArray())
+    if (conn.responseCode == 200) {
+        val responseStr = conn.inputStream.bufferedReader().use { it.readText() }
+        "\"message_id\":(\\d+)".toRegex().find(responseStr)?.groupValues?.get(1)?.toLongOrNull()
+    } else if (conn.responseCode == 429) throw java.io.IOException("Rate limited") else null
+}
+
+internal fun editTelegramMessage(botToken: String, chatId: Long, messageId: Long, newText: String): Int? = executeTelegramRequest {
+    val url = java.net.URL("https://api.telegram.org/bot$botToken/editMessageText")
+    val conn = url.openConnection() as java.net.HttpURLConnection
+    conn.requestMethod = "POST"
+    conn.setRequestProperty("Content-Type", "application/json")
+    conn.doOutput = true
+    val payload = "{\"chat_id\": $chatId, \"message_id\": $messageId, \"text\": \"${newText.replace("\"", "\\\"").replace("\n", "\\n")}\", \"parse_mode\": \"Markdown\"}"
+    conn.outputStream.write(payload.toByteArray())
+    if (conn.responseCode == 429) throw java.io.IOException("Rate limited")
+    conn.responseCode
+}
+
+// ==========================================
+// 5. WorkManager Background Worker
 // ==========================================
 class AgentWorkRequest(
     context: Context,
@@ -159,21 +202,28 @@ class AgentWorkRequest(
         }
 
         return try {
-            AgentBridge.processPromptWithTelegramUpdates(
+            val statusMsgId = sendTelegramMessage(botToken, chatId, "⏰ *Task Triggered:*\n`${prompt}`")
+            val response = AgentBridge.processPromptWithTelegramUpdates(
                 prompt = prompt,
                 botToken = botToken,
                 chatId = chatId,
-                messageId = 0L
+                messageId = statusMsgId ?: 0L
             )
+            if (statusMsgId != null) {
+                editTelegramMessage(botToken, chatId, statusMsgId, "✅ *Task Completed*\n\n$response")
+            } else {
+                sendTelegramMessage(botToken, chatId, "✅ *Task Completed*\n\n$response")
+            }
             Result.success()
         } catch (e: Exception) {
+            sendTelegramMessage(botToken, chatId, "❌ *Task Failed:* ${e.localizedMessage}")
             Result.retry()
         }
     }
 }
 
 // ==========================================
-// 5. Scheduled Tasks, Alarms & Cron Manager
+// 6. Scheduled Tasks & Alarms Manager
 // ==========================================
 @Serializable
 data class ScheduledTask(
@@ -201,49 +251,5 @@ class AlarmReceiver : BroadcastReceiver() {
             .build()
 
         WorkManager.getInstance(context).enqueue(workRequest)
-    }
-}
-
-object CronJobManager {
-    private val scheduledTasks: MutableList<ScheduledTask> = Collections.synchronizedList(mutableListOf<ScheduledTask>())
-
-    fun addTask(task: ScheduledTask) {
-        scheduledTasks.add(task)
-    }
-
-    fun scheduleExactAlarm(context: Context, botToken: String, chatId: Long, prompt: String, triggerAtMillis: Long) {
-        val alarmManager = context.getSystemService(Context.ALARM_SERVICE) as AlarmManager
-        
-        val intent = Intent(context, AlarmReceiver::class.java).apply {
-            putExtra("chat_id", chatId)
-            putExtra("prompt", prompt)
-            putExtra("bot_token", botToken)
-        }
-
-        val pendingIntent = PendingIntent.getBroadcast(
-            context,
-            (chatId + triggerAtMillis).toInt(),
-            intent,
-            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
-        )
-
-        try {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S && !alarmManager.canScheduleExactAlarms()) {
-                alarmManager.set(AlarmManager.RTC_WAKEUP, triggerAtMillis, pendingIntent)
-            } else {
-                alarmManager.setExactAndAllowWhileIdle(
-                    AlarmManager.RTC_WAKEUP,
-                    triggerAtMillis,
-                    pendingIntent
-                )
-            }
-        } catch (e: SecurityException) {
-            alarmManager.set(AlarmManager.RTC_WAKEUP, triggerAtMillis, pendingIntent)
-        }
-    }
-
-    // WorkManager handles execution queue management natively.
-    fun startDispatcher(botToken: String) {
-        // No-op
     }
 }
