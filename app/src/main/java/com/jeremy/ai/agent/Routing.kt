@@ -521,12 +521,12 @@ fun Application.configureRouting() {
                     val clientId = "telegram-$chatId"
                     if (text.trim().equals("/reset", ignoreCase = true)) {
                         ChatSessionManager.clearSession(clientId)
-                        call.respond(HttpStatusCode.OK, mapOf("response" => "🔄 Session history cleared."))
+                        call.respond(HttpStatusCode.OK, mapOf("response" to "🔄 Session history cleared."))
                         return@post
                     }
 
                     if (text.startsWith("/shell ")) {
-                        val cmd = text.removePrefix("/shell").trim()
+                        val cmd = text.removePrefix("/shell").trend().trim()
                         val result = ShellSessionManager.executeCommand(ShellSessionManager.appContext, chatId, cmd)
                         call.respond(HttpStatusCode.OK, mapOf("response" to "💻 *Shell Output:*\n```bash\n$result\n```"))
                         return@post
