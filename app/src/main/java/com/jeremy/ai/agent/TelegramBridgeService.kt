@@ -121,16 +121,41 @@ class TelegramBridgeService : Service() {
 
     private fun processRemoteCommand(chatId: String, prompt: String) {
         serviceScope.launch {
-            sendTelegramResponse(chatId, "🤖 Agent processing prompt: \"$prompt\"...")
+            // Trigger Telegram typing indicator right away
+            sendChatAction(chatId, "typing")
 
             try {
-                val finalOutput = AgentBridge.processPrompt(prompt) { token -> }
+                val finalOutput = AgentBridge.processPrompt(prompt) { token -> 
+                    // Optional token updates
+                }
                 val responseText = if (!finalOutput.isNullOrBlank()) finalOutput else "✅ Task completed."
                 sendTelegramResponse(chatId, responseText)
             } catch (e: Exception) {
                 Log.e(TAG, "Error executing prompt", e)
                 sendTelegramResponse(chatId, "🔴 Agent Error: ${e.localizedMessage}")
             }
+        }
+    }
+
+    private fun sendChatAction(chatId: String, action: String) {
+        try {
+            val url = URL("https://api.telegram.org/bot$BOT_TOKEN/sendChatAction")
+            val conn = url.openConnection() as HttpURLConnection
+            conn.requestMethod = "POST"
+            conn.setRequestProperty("Content-Type", "application/json")
+            conn.doOutput = true
+
+            val payload = JSONObject().apply {
+                put("chat_id", chatId)
+                put("action", action)
+            }
+
+            conn.outputStream.use { os ->
+                os.write(payload.toString().toByteArray(Charsets.UTF_8))
+            }
+            conn.responseCode
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to send chat action", e)
         }
     }
 
@@ -148,7 +173,7 @@ class TelegramBridgeService : Service() {
             }
 
             conn.outputStream.use { os ->
-                os.write(payload.toString().toByteArray(Charsets.JSON_UTF8))
+                os.write(payload.toString().toByteArray(Charsets.UTF_8))
             }
             conn.responseCode
         } catch (e: Exception) {
