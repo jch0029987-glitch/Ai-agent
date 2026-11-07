@@ -36,7 +36,7 @@ import kotlinx.serialization.json.Json
 import kotlin.time.Duration.Companion.seconds
 import com.jeremy.ai.backend.ShellSessionManager
 import com.jeremy.ai.backend.configureRouting
-import com.jeremy.ai.backend.AlarmReceiver
+// AlarmReceiver is in the same package (com.jeremy.ai.agent), so no separate backend import is required for it.
 
 class MainActivity : ComponentActivity() {
 
