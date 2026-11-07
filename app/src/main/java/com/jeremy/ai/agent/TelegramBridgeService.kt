@@ -123,16 +123,23 @@ class TelegramBridgeService : Service() {
 
     private fun processRemoteCommand(chatId: String, prompt: String) {
         serviceScope.launch {
-            // Trigger the Telegram "typing" indicator immediately
             sendChatAction(chatId, "typing")
+            sendTelegramResponse(chatId, "⚙️ Processing request...")
 
             try {
-                val finalOutput = AgentBridge.processPrompt(prompt) { token -> }
+                sendTelegramResponse(chatId, "🔄 Calling AgentBridge.processPrompt()...")
+
+                val finalOutput = AgentBridge.processPrompt(prompt) { token -> 
+                    // Optional token updates
+                }
+
+                sendTelegramResponse(chatId, "📥 AgentBridge finished. Output length: ${finalOutput.length}")
+
                 val responseText = if (!finalOutput.isNullOrBlank()) finalOutput else "✅ Task completed."
                 sendTelegramResponse(chatId, responseText)
+
             } catch (e: Exception) {
                 Log.e(TAG, "Error executing prompt", e)
-                // Print the exact error stack trace or message straight to Telegram chat
                 val errorDetails = e.localizedMessage ?: e.javaClass.simpleName
                 val stackTop = e.stackTrace.firstOrNull()?.toString() ?: "Unknown line"
                 sendTelegramResponse(chatId, "🔴 Agent Error:\n`$errorDetails`\n\nAt: `$stackTop`")
