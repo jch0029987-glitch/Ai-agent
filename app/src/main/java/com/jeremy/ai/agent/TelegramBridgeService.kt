@@ -1,9 +1,14 @@
 package com.jeremy.ai.agent
 
+import android.app.Notification
+import android.app.NotificationChannel
+import android.app.NotificationManager
 import android.app.Service
 import android.content.Intent
+import android.os.Build
 import android.os.IBinder
 import android.util.Log
+import androidx.core.app.NotificationCompat
 import kotlinx.coroutines.*
 import org.json.JSONObject
 import java.net.HttpURLConnection
@@ -16,8 +21,16 @@ class TelegramBridgeService : Service() {
 
     companion object {
         private const val TAG = "TelegramBridge"
+        private const val CHANNEL_ID = "TelegramBridgeChannel"
+        private const val NOTIF_ID = 1337
         private val BOT_TOKEN = BuildConfig.TELEGRAM_BOT_TOKEN
         private val ALLOWED_USER_ID = BuildConfig.TELEGRAM_ALLOWED_USER_ID
+    }
+
+    override fun onCreate() {
+        super.onCreate()
+        createNotificationChannel()
+        startForeground(NOTIF_ID, createNotification("Telegram Agent Bot Running..."))
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -27,9 +40,32 @@ class TelegramBridgeService : Service() {
             return START_NOT_STICKY
         }
 
-        Log.i(TAG, "Starting Telegram Remote Control Service with Bot Token...")
+        Log.i(TAG, "Starting Telegram Native Polling Service...")
         startPolling()
         return START_STICKY
+    }
+
+    private fun createNotificationChannel() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            val channel = NotificationChannel(
+                CHANNEL_ID,
+                "Telegram AI Bridge Service",
+                NotificationManager.IMPORTANCE_LOW
+            ).apply {
+                description = "Keeps the local Telegram AI agent bridge active in background"
+            }
+            val manager = getSystemService(NotificationManager::class.java)
+            manager?.createNotificationChannel(channel)
+        }
+    }
+
+    private fun createNotification(text: String): Notification {
+        return NotificationCompat.Builder(this, CHANNEL_ID)
+            .setContentTitle("LiteRT-LM Agent Bridge")
+            .setContentText(text)
+            .setSmallIcon(android.R.drawable.ic_menu_compass)
+            .setOngoing(true)
+            .build()
     }
 
     private fun startPolling() {
@@ -38,7 +74,7 @@ class TelegramBridgeService : Service() {
                 try {
                     pollUpdates()
                 } catch (e: Exception) {
-                    Log.e(TAG, "Polling error: ${e.localizedMessage}", e)
+                    Log.e(TAG, "Polling error: ${e.localizedMessage}")
                     delay(5000)
                 }
             }
@@ -69,8 +105,6 @@ class TelegramBridgeService : Service() {
                         val chatId = message.getJSONObject("chat").getLong("id").toString()
                         val text = message.optString("text", "")
 
-                        Log.i(TAG, "Received message from sender $senderId: $text")
-
                         if (ALLOWED_USER_ID.isNotBlank() && senderId != ALLOWED_USER_ID) {
                             sendTelegramResponse(chatId, "⚠️ Unauthorized user. Execution blocked.")
                             continue
@@ -82,8 +116,6 @@ class TelegramBridgeService : Service() {
                     }
                 }
             }
-        } else {
-            Log.w(TAG, "Telegram getUpdates failed with response code: ${conn.responseCode}")
         }
     }
 
@@ -92,15 +124,11 @@ class TelegramBridgeService : Service() {
             sendTelegramResponse(chatId, "🤖 Agent processing prompt: \"$prompt\"...")
 
             try {
-                val finalOutput = AgentBridge.processPrompt(prompt) { token ->
-                    // Optional token streaming
-                }
-
+                val finalOutput = AgentBridge.processPrompt(prompt) { token -> }
                 val responseText = if (!finalOutput.isNullOrBlank()) finalOutput else "✅ Task completed."
-                Log.i(TAG, "Agent finished. Sending response to chat $chatId: $responseText")
                 sendTelegramResponse(chatId, responseText)
             } catch (e: Exception) {
-                Log.e(TAG, "Error processing prompt through AgentBridge", e)
+                Log.e(TAG, "Error executing prompt", e)
                 sendTelegramResponse(chatId, "🔴 Agent Error: ${e.localizedMessage}")
             }
         }
@@ -120,21 +148,17 @@ class TelegramBridgeService : Service() {
             }
 
             conn.outputStream.use { os ->
-                os.write(payload.toString().toByteArray(Charsets.UTF_8))
+                os.write(payload.toString().toByteArray(Charsets.JSON_UTF8))
             }
-            val responseCode = conn.responseCode
-            if (responseCode != 200) {
-                val errBody = conn.errorStream?.bufferedReader()?.use { it.readText() } ?: "Unknown error"
-                Log.e(TAG, "Failed to send Telegram message. Code: $responseCode, Body: $errBody")
-            }
+            conn.responseCode
         } catch (e: Exception) {
-            Log.e(TAG, "Failed to send response back to Telegram", e)
+            Log.e(TAG, "Failed to send response", e)
         }
     }
 
     override fun onBind(intent: Intent?): IBinder? = null
 
-    override onDestroy() {
+    override fun onDestroy() {
         super.onDestroy()
         serviceScope.cancel()
     }
