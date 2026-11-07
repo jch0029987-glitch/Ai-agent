@@ -12,7 +12,6 @@ import io.ktor.server.routing.*
 
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.GlobalScope
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.SerialName
@@ -150,90 +149,6 @@ class TermuxResultReceiver : BroadcastReceiver() {
 @Serializable
 data class ScheduledTask(val taskId: String, val chatId: Long, val prompt: String, val executeAtTimestamp: Long)
 
-class AlarmReceiver : BroadcastReceiver() {
-    override fun onReceive(context: Context, intent: Intent) {
-        val chatId = intent.getLongExtra("chat_id", 0L)
-        val prompt = intent.getStringExtra("prompt") ?: return
-        val botToken = intent.getStringExtra("bot_token") ?: BuildConfig.TELEGRAM_BOT_TOKEN
-
-        GlobalScope.launch(Dispatchers.IO) {
-            try {
-                val statusMsgId = sendTelegramMessage(botToken, chatId, "⏰ *Alarm Triggered:*\n`${prompt}`")
-                val response = AgentBridge.processPromptWithTelegramUpdates(
-                    prompt = prompt,
-                    botToken = botToken,
-                    chatId = chatId,
-                    messageId = statusMsgId ?: 0L
-                )
-                if (statusMsgId != null) {
-                    editTelegramMessage(botToken, chatId, statusMsgId, "✅ *Alarm Task Completed*\n\n$response")
-                }
-            } catch (e: Exception) {
-                sendTelegramMessage(botToken, chatId, "❌ *Alarm Task Failed:* ${e.localizedMessage}")
-            }
-        }
-    }
-}
-
-object CronJobManager {
-    private val scheduledTasks = Collections.synchronizedList(mutableListOf<ScheduledTask>())
-    fun addTask(task: ScheduledTask) { scheduledTasks.add(task) }
-
-    fun scheduleExactAlarm(context: Context, botToken: String, chatId: Long, prompt: String, triggerAtMillis: Long) {
-        val alarmManager = context.getSystemService(Context.ALARM_SERVICE) as AlarmManager
-        
-        val intent = Intent(context, AlarmReceiver::class.java).apply {
-            putExtra("chat_id", chatId)
-            putExtra("prompt", prompt)
-            putExtra("bot_token", botToken)
-        }
-
-        val pendingIntent = PendingIntent.getBroadcast(
-            context,
-            (chatId + triggerAtMillis).toInt(),
-            intent,
-            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
-        )
-
-        try {
-            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.S && !alarmManager.canScheduleExactAlarms()) {
-                alarmManager.set(AlarmManager.RTC_WAKEUP, triggerAtMillis, pendingIntent)
-            } else {
-                alarmManager.setExactAndAllowWhileIdle(
-                    AlarmManager.RTC_WAKEUP,
-                    triggerAtMillis,
-                    pendingIntent
-                )
-            }
-        } catch (e: SecurityException) {
-            alarmManager.set(AlarmManager.RTC_WAKEUP, triggerAtMillis, pendingIntent)
-        }
-    }
-
-    fun startDispatcher(botToken: String) {
-        GlobalScope.launch(Dispatchers.IO) {
-            while (true) {
-                val now = System.currentTimeMillis()
-                val iterator = scheduledTasks.iterator()
-                while (iterator.hasNext()) {
-                    val task = iterator.next()
-                    if (now >= task.executeAtTimestamp) {
-                        try {
-                            val statusMsgId = sendTelegramMessage(botToken, task.chatId, "⏰ *Cron Reminder Triggered:*\n`${task.prompt}`")
-                            val response = AgentBridge.processPromptWithTelegramUpdates(prompt = task.prompt, botToken = botToken, chatId = task.chatId, messageId = statusMsgId ?: 0L)
-                            if (statusMsgId != null) {
-                                editTelegramMessage(botToken, task.chatId, statusMsgId, "✅ *Cron Task Completed*\n\n$response")
-                            }
-                        } catch (e: Exception) {}
-                        iterator.remove()
-                    }
-                }
-                delay(10000L)
-            }
-        }
-    }
-}
-
 // ==========================================
 // 2. OpenAI Spec & MCP DTO Models
 // ==========================================
@@ -346,7 +261,6 @@ fun Application.configureServer() {
 
 fun Application.configureRouting() {
     val telegramBotToken = BuildConfig.TELEGRAM_BOT_TOKEN
-    try { CronJobManager.startDispatcher(telegramBotToken) } catch (e: Exception) {}
 
     routing {
         // --- Standalone JSON-RPC 2.0 MCP Endpoint (/mcp) ---
