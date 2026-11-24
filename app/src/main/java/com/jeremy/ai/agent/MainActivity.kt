@@ -23,6 +23,10 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.safeDrawingPadding
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.core.content.ContextCompat
 import com.jeremy.ai.agent.ui.AgentChatScreen
@@ -75,11 +79,13 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         enableEdgeToEdge()
         super.onCreate(savedInstanceState)
-        
+
         setupGlobalCrashHandler()
         checkAndRequestPermissions()
         checkAndRequestExactAlarmPermission()
 
+        // Load persisted AI backend settings and bind Termux shell context
+        AiBackendConfig.load(applicationContext)
         ShellSessionManager.appContext = applicationContext
 
         // 1. Initialize AgentManager and load LiteRT-LM engine from storage in background
@@ -113,6 +119,13 @@ class MainActivity : ComponentActivity() {
         // ----------------------------------------
 
         setContent {
+            var backendSettings by remember {
+                mutableStateOf(AiBackendConfig.load(applicationContext))
+            }
+            var showStartupDialog by remember {
+                mutableStateOf(backendSettings.showOnStartup)
+            }
+
             MaterialTheme {
                 Surface(
                     modifier = Modifier
@@ -123,6 +136,22 @@ class MainActivity : ComponentActivity() {
                     AgentChatScreen(
                         requestBatteryExemption = { requestIgnoreBatteryOptimizations() }
                     )
+
+                    if (showStartupDialog) {
+                        BackendStartupDialog(
+                            initialSettings = backendSettings,
+                            onConfirm = { updated ->
+                                val saved = AiBackendConfig.save(applicationContext, updated)
+                                backendSettings = saved
+                                showStartupDialog = false
+                                startEmbeddedServer()
+                                startTelegramBridge()
+                            },
+                            onDismiss = {
+                                showStartupDialog = false
+                            }
+                        )
+                    }
                 }
             }
         }

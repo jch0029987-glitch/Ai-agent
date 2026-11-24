@@ -1,6 +1,14 @@
 package com.jeremy.ai.backend
 
+import android.app.PendingIntent
+import android.content.BroadcastReceiver
+import android.content.Context
+import android.content.Intent
+import android.os.Bundle
+import android.os.Environment
 import com.jeremy.ai.agent.AgentBridge
+import com.jeremy.ai.agent.AiBackendConfig
+import com.jeremy.ai.agent.AiBackendMode
 import com.jeremy.ai.agent.BuildConfig
 import com.jeremy.ai.agent.AlarmReceiver
 import io.ktor.http.*
@@ -10,7 +18,8 @@ import io.ktor.server.plugins.contentnegotiation.*
 import io.ktor.server.request.*
 import io.ktor.server.response.*
 import io.ktor.server.routing.*
-
+import io.ktor.server.websocket.*
+import io.ktor.websocket.*
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.GlobalScope
 import kotlinx.coroutines.launch
@@ -19,8 +28,8 @@ import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
-import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
 import java.io.File
 import android.os.Environment
 import android.content.Context
@@ -30,8 +39,8 @@ import android.app.PendingIntent
 import android.content.BroadcastReceiver
 import android.os.Bundle
 import java.util.Collections
-import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.CompletableFuture
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
 
@@ -82,7 +91,7 @@ object ShellSessionManager {
             val callbackIntent = Intent(context, TermuxResultReceiver::class.java).apply {
                 putExtra("execution_id", executionId)
             }
-            
+
             val pendingIntent = PendingIntent.getBroadcast(
                 context,
                 executionId,
@@ -127,8 +136,8 @@ object ShellSessionManager {
             ?: bundle?.getString("com.termux.plugin.result.bundle.stdout")
             ?: intent.getStringExtra("stdout")
             ?: intent.getStringExtra("com.termux.RUN_COMMAND_STDOUT")
-            ?: allExtras.entries.firstOrNull { 
-                it.key.contains("stdout", true) || it.key.contains("output", true) 
+            ?: allExtras.entries.firstOrNull {
+                it.key.contains("stdout", true) || it.key.contains("output", true)
             }?.value?.toString()
             ?: allExtras.entries.firstOrNull { it.value is String && (it.value as String).length > 5 }?.value?.toString()
             ?: "Command completed successfully."
@@ -140,8 +149,8 @@ object ShellSessionManager {
 class TermuxResultReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
         val executionId = intent.getIntExtra("execution_id", -1)
-        val bundle = intent.getBundleExtra("com.termux.plugin.result.bundle") 
-            ?: intent.getBundleExtra("result") 
+        val bundle = intent.getBundleExtra("com.termux.plugin.result.bundle")
+            ?: intent.getBundleExtra("result")
             ?: intent.extras
         ShellSessionManager.handleResult(executionId, intent, bundle)
     }
@@ -169,6 +178,18 @@ class TermuxResultReceiver : BroadcastReceiver() {
 // 3. Utilities & Path Resolution
 // ==========================================
 fun getAvailableModels(): List<OpenAIModelObject> {
+    val settings = AiBackendConfig.currentSettings
+    if (settings.mode == AiBackendMode.OLLAMA) {
+        return buildList {
+            if (settings.ollamaCoderModel.isNotBlank()) {
+                add(OpenAIModelObject(id = settings.ollamaCoderModel, owned_by = "termux-ollama-coder"))
+            }
+            if (!settings.ollamaVisionModel.isNullOrBlank()) {
+                add(OpenAIModelObject(id = settings.ollamaVisionModel, owned_by = "termux-ollama-vision"))
+            }
+        }
+    }
+
     val modelList = mutableListOf<OpenAIModelObject>()
     try {
         val externalStorage = Environment.getExternalStorageDirectory()
@@ -258,6 +279,9 @@ fun Application.configureServer() {
 }
 
 fun Application.configureRouting() {
+    if (::ShellSessionManager.appContext.isInitialized) {
+        AiBackendConfig.load(ShellSessionManager.appContext)
+    }
     val telegramBotToken = BuildConfig.TELEGRAM_BOT_TOKEN
 
     routing {
@@ -434,7 +458,17 @@ fun Application.configureRouting() {
         }
 
         get("/health") {
-            call.respond(mapOf("status" to "healthy", "service" to "agent-backend-gateway"))
+            val active = AiBackendConfig.currentSettings
+            call.respond(
+                mapOf(
+                    "status" to "healthy",
+                    "service" to "agent-backend-gateway",
+                    "backend" to active.mode.name,
+                    "ollamaUrl" to active.ollamaBaseUrl,
+                    "coderModel" to active.ollamaCoderModel,
+                    "visionModel" to (active.ollamaVisionModel ?: "none")
+                )
+            )
         }
 
         get("/v1/models") {
@@ -444,8 +478,11 @@ fun Application.configureRouting() {
         post("/v1/chat/completions") {
             try {
                 val request = call.receive<OpenAIChatRequest>()
+                val settings = AiBackendConfig.currentSettings
                 val reqId = "chatcmpl-${System.currentTimeMillis()}"
-                val requestedModel = request.model?.ifBlank { "gemma-4-abliterated" } ?: "gemma-4-abliterated"
+                val requestedModel = request.model?.ifBlank {
+                    if (settings.mode == AiBackendMode.OLLAMA) settings.ollamaCoderModel else "gemma-4-abliterated"
+                } ?: if (settings.mode == AiBackendMode.OLLAMA) settings.ollamaCoderModel else "gemma-4-abliterated"
 
                 val fullPrompt = buildString {
                     for (msg in request.messages) {
@@ -534,6 +571,18 @@ fun Application.configureRouting() {
 
                     // Respond immediately to Python so it never hangs or times out
                     call.respond(HttpStatusCode.OK, mapOf("response" to "⚙️ Processing request..."))
+                    val activeBackend = AiBackendConfig.currentSettings
+                    val backendLabel = if (activeBackend.mode == AiBackendMode.OLLAMA) {
+                        "Ollama (${activeBackend.ollamaCoderModel})"
+                    } else {
+                        "LiteRT-LM"
+                    }
+                    val statusMessageId = sendTelegramMessage(telegramBotToken, chatId, "⚙️ *Agent Initializing [$backendLabel]...*\n`Processing prompt`")
+                    val history = ChatSessionManager.getHistory(clientId)
+                    val fullPrompt = buildString {
+                        for ((role, msg) in history) append("$role: $msg\n")
+                        append("User: $text\nAssistant:")
+                    }
 
                     // Execute the multi-step agent loop asynchronously in the background
                     GlobalScope.launch(Dispatchers.Default) {

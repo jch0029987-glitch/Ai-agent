@@ -16,12 +16,16 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.jeremy.ai.agent.AgentUiState
 import com.jeremy.ai.agent.AgentViewModel
+import com.jeremy.ai.agent.AiBackendConfig
+import com.jeremy.ai.agent.AiBackendMode
+import com.jeremy.ai.agent.BackendStartupDialog
 import kotlinx.coroutines.launch
 import java.io.File
 
@@ -30,13 +34,17 @@ fun AgentChatScreen(
     viewModel: AgentViewModel = viewModel(),
     requestBatteryExemption: () -> Unit = {}
 ) {
+    val context = LocalContext.current
     val uiState by viewModel.uiState.collectAsState()
     val currentSession = viewModel.currentSession
+
+    var backendSettings by remember { mutableStateOf(AiBackendConfig.currentSettings) }
+    var showBackendDialog by remember { mutableStateOf(false) }
 
     // Updated to match the fixed sequence-length MediaPipe .task file name
     var modelPathInput by remember { mutableStateOf("qwen.task") }
     var promptInput by remember { mutableStateOf("") }
-    
+
     // State to toggle the built-in Error Log Viewer dialog
     var showLogDialog by remember { mutableStateOf(false) }
 
@@ -46,18 +54,37 @@ fun AgentChatScreen(
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically
         ) {
-            Column {
-                Text("AI Agent (MediaPipe)", style = MaterialTheme.typography.headlineSmall)
+            Column(modifier = Modifier.weight(1f)) {
+                Text("AI Agent", style = MaterialTheme.typography.headlineSmall)
                 Spacer(modifier = Modifier.height(2.dp))
                 // Live Ktor Server Status Indicator Badge
                 ServerStatusBadge(isOnline = viewModel.isServerRunning)
+                Text(
+                    text = if (backendSettings.mode == AiBackendMode.OLLAMA) {
+                        val visionTag = backendSettings.ollamaVisionModel?.let { " + $it" } ?: ""
+                        "Backend: Ollama (${backendSettings.ollamaCoderModel}$visionTag)"
+                    } else {
+                        "Backend: Local LiteRT-LM"
+                    },
+                    fontSize = 11.sp,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
             }
-            
-            // Action controls row (Error Logs + Battery Opt)
+
+            // Action controls row (Backend Picker + Error Logs + Battery Opt)
             Row(
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
+                OutlinedButton(
+                    onClick = {
+                        backendSettings = AiBackendConfig.load(context)
+                        showBackendDialog = true
+                    },
+                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp)
+                ) {
+                    Text("Backend")
+                }
                 IconButton(onClick = { showLogDialog = true }) {
                     Icon(
                         imageVector = Icons.Default.Warning,
@@ -65,19 +92,22 @@ fun AgentChatScreen(
                         tint = MaterialTheme.colorScheme.error
                     )
                 }
-                Button(onClick = requestBatteryExemption) {
-                    Text("Battery Opt")
+                Button(
+                    onClick = requestBatteryExemption,
+                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp)
+                ) {
+                    Text("Battery")
                 }
             }
         }
         Spacer(modifier = Modifier.height(8.dp))
 
-        // Model Path Input Row
+        // Model Path Input Row (for local LiteRT-LM / .task files)
         Row(modifier = Modifier.fillMaxWidth()) {
             OutlinedTextField(
                 value = modelPathInput,
                 onValueChange = { modelPathInput = it },
-                label = { Text("Model File Name / Path") },
+                label = { Text("Local Model File Name / Path") },
                 modifier = Modifier.weight(1f)
             )
             Spacer(modifier = Modifier.width(8.dp))
@@ -94,7 +124,15 @@ fun AgentChatScreen(
 
         // UI State / Status Banner
         val (bannerContainerColor, bannerContentColor, statusMessage) = when (uiState) {
-            is AgentUiState.Idle -> Triple(MaterialTheme.colorScheme.surfaceVariant, MaterialTheme.colorScheme.onSurfaceVariant, "Status: Ready to load model.")
+            is AgentUiState.Idle -> Triple(
+                MaterialTheme.colorScheme.surfaceVariant,
+                MaterialTheme.colorScheme.onSurfaceVariant,
+                if (backendSettings.mode == AiBackendMode.OLLAMA) {
+                    "Status: Ready via Ollama (${backendSettings.ollamaCoderModel})."
+                } else {
+                    "Status: Ready to load local model."
+                }
+            )
             is AgentUiState.Loading -> Triple(MaterialTheme.colorScheme.surfaceVariant, MaterialTheme.colorScheme.onSurfaceVariant, (uiState as AgentUiState.Loading).message)
             is AgentUiState.Ready -> Triple(MaterialTheme.colorScheme.primaryContainer, MaterialTheme.colorScheme.onPrimaryContainer, "Status: Engine initialized and ready!")
             is AgentUiState.Generating -> Triple(MaterialTheme.colorScheme.tertiaryContainer, MaterialTheme.colorScheme.onTertiaryContainer, "Status: Generating response...")
@@ -154,6 +192,19 @@ fun AgentChatScreen(
         }
     }
 
+    if (showBackendDialog) {
+        BackendStartupDialog(
+            initialSettings = backendSettings,
+            onConfirm = { updated ->
+                backendSettings = AiBackendConfig.save(context, updated)
+                showBackendDialog = false
+            },
+            onDismiss = {
+                showBackendDialog = false
+            }
+        )
+    }
+
     // Error Log Viewer Dialog Overlay
     if (showLogDialog) {
         ErrorLogViewerDialog(onDismiss = { showLogDialog = false })
@@ -197,7 +248,7 @@ fun ErrorLogViewerDialog(onDismiss: () -> Unit) {
         } else {
             "No error log found at ${logFile.absolutePath}"
         }
-        
+
         if (rawLogContent.isNotBlank()) {
             val lineCount = rawLogContent.lines().size
             if (lineCount > 0) {

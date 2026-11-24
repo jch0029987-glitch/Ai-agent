@@ -16,19 +16,20 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import org.json.JSONArray
+import org.json.JSONObject
 import java.io.File
-// BuildConfig is generated in this same package (com.jeremy.ai.agent), so no explicit import is required here!
+import java.net.HttpURLConnection
+import java.net.URL
 
 object AgentBridge {
     var agentManager: AgentManager? = null
 
-    // Exact 2-parameter signature for AgentViewModel and MatrixAgentBridge
     suspend fun processPrompt(prompt: String, onToken: (String) -> Unit): String {
         val manager = agentManager ?: return "Error: AgentManager not initialized."
         return manager.promptAgent(prompt, onToken)
     }
 
-    // Dedicated signature for Telegram webhook routing without lambda/parameter collisions
     suspend fun processPromptWithTelegramUpdates(
         prompt: String,
         botToken: String,
@@ -44,13 +45,13 @@ class AgentManager(private val context: Context) {
     private var engine: Engine? = null
     private var isInitialized = false
 
-    // Mutex lock to serialize native C++/JNI engine calls and prevent race crashes
     private val inferenceMutex = Mutex()
 
     private val githubClient = GitHubToolClient()
     private val toolRouter = AgentToolRouter(context, githubClient)
 
     init {
+        AiBackendConfig.load(context)
         AgentBridge.agentManager = this
     }
 
@@ -58,6 +59,10 @@ class AgentManager(private val context: Context) {
         private const val TAG = "AgentManager"
         private val CASUAL_CHAT_REGEX = Regex("^(hi|hello|hey|sup|what's up|who are you|help|thanks|thank you).*")
         private val ACTION_KEYWORDS = listOf("open", "launch", "click", "tap", "type", "get", "check", "list", "show", "press", "find", "read", "patch", "write", "task:", "execute", "git", "shell", "search", "alarm", "schedule", "remind", "cron")
+            "open", "launch", "click", "tap", "type", "get", "check", "list", "show",
+            "press", "find", "read", "patch", "write", "task:", "execute", "git", "shell",
+            "search", "alarm", "schedule", "remind", "cron"
+        )
     }
 
     private fun showToast(message: String) {
@@ -66,87 +71,87 @@ class AgentManager(private val context: Context) {
         }
     }
 
-    suspend fun setupEngineFromStorage(modelPathOrName: String = "gemma-4-E2B-it.litertlm"): Result<Boolean> = withContext(Dispatchers.IO) {
-        inferenceMutex.withLock {
-            try {
-                val fileName = modelPathOrName.trim()
+    suspend fun setupEngineFromStorage(modelPathOrName: String = "gemma-4-E2B-it.litertlm"): Result<Boolean> =
+        withContext(Dispatchers.IO) {
+            inferenceMutex.withLock {
+                try {
+                    val fileName = modelPathOrName.trim()
 
-                val targetFile = if (fileName.startsWith("/")) {
-                    File(fileName)
-                } else {
-                    val externalStorage = Environment.getExternalStorageDirectory()
-                    val sdcardModelsFolder = File(externalStorage, "Download/models/$fileName")
-                    val sdcardDownloadFolder = File(externalStorage, "Download/$fileName")
-                    val internalFilesFolder = File(context.filesDir, fileName)
+                    val targetFile = if (fileName.startsWith("/")) {
+                        File(fileName)
+                    } else {
+                        val externalStorage = Environment.getExternalStorageDirectory()
+                        val sdcardModelsFolder = File(externalStorage, "Download/models/$fileName")
+                        val sdcardDownloadFolder = File(externalStorage, "Download/$fileName")
+                        val internalFilesFolder = File(context.filesDir, fileName)
 
-                    when {
-                        sdcardModelsFolder.exists() -> sdcardModelsFolder
-                        sdcardDownloadFolder.exists() -> sdcardDownloadFolder
-                        else -> internalFilesFolder
+                        when {
+                            sdcardModelsFolder.exists() -> sdcardModelsFolder
+                            sdcardDownloadFolder.exists() -> sdcardDownloadFolder
+                            else -> internalFilesFolder
+                        }
                     }
-                }
 
-                Log.i(TAG, "Targeting model file: ${targetFile.absolutePath} (Exists: ${targetFile.exists()})")
+                    Log.i(TAG, "Targeting model file: ${targetFile.absolutePath} (Exists: ${targetFile.exists()})")
 
-                if (!targetFile.exists()) {
-                    val errorMsg = "File does not exist at path: ${targetFile.absolutePath}"
-                    Log.e(TAG, errorMsg)
-                    showToast("Model file not found at $fileName")
+                    if (!targetFile.exists()) {
+                        val errorMsg = "File does not exist at path: ${targetFile.absolutePath}"
+                        Log.e(TAG, errorMsg)
+                        showToast("Model file not found at $fileName")
+                        isInitialized = false
+                        return@withContext Result.failure(IllegalArgumentException(errorMsg))
+                    }
+
+                    if (!targetFile.canRead()) {
+                        val errorMsg = "Permission denied: Cannot read file at ${targetFile.absolutePath}"
+                        Log.e(TAG, errorMsg)
+                        showToast("Permission denied reading $fileName")
+                        isInitialized = false
+                        return@withContext Result.failure(SecurityException(errorMsg))
+                    }
+
+                    shutdownEngineInternal()
+
+                    var activeBackendName = "GPU (Vulkan/OpenCL)"
+
+                    val engineConfig = try {
+                        Log.i(TAG, "Initializing LiteRT-LM Engine on GPU backend...")
+                        EngineConfig(
+                            modelPath = targetFile.absolutePath,
+                            backend = Backend.GPU()
+                        )
+                    } catch (eGpu: Exception) {
+                        Log.w(TAG, "GPU backend unavailable, falling back to CPU", eGpu)
+                        activeBackendName = "CPU"
+                        EngineConfig(
+                            modelPath = targetFile.absolutePath,
+                            backend = Backend.CPU()
+                        )
+                    }
+
+                    val newEngine = Engine(engineConfig)
+                    newEngine.initialize()
+                    engine = newEngine
+                    isInitialized = true
+
+                    Log.i(TAG, "LiteRT-LM successfully initialized on $activeBackendName!")
+                    showToast("LiteRT-LM Engine Ready [$activeBackendName]")
+
+                    Result.success(true)
+                } catch (e: Exception) {
+                    Log.e(TAG, "LiteRT-LM Engine initialization failure: ${e.localizedMessage}", e)
+                    showToast("Engine Init Failed: ${e.localizedMessage}")
                     isInitialized = false
-                    return@withContext Result.failure(IllegalArgumentException(errorMsg))
+                    Result.failure(e)
                 }
-
-                if (!targetFile.canRead()) {
-                    val errorMsg = "Permission denied: Cannot read file at ${targetFile.absolutePath}"
-                    Log.e(TAG, errorMsg)
-                    showToast("Permission denied reading $fileName")
-                    isInitialized = false
-                    return@withContext Result.failure(SecurityException(errorMsg))
-                }
-
-                shutdownEngineInternal()
-
-                var activeBackendName = "GPU (Vulkan/OpenCL)"
-
-                // Performance-optimized backend configuration: Prefer GPU delegate for maximum mobile throughput on Tensor G4, fallback to CPU
-                val engineConfig = try {
-                    Log.i(TAG, "Initializing LiteRT-LM Engine on GPU backend...")
-                    EngineConfig(
-                        modelPath = targetFile.absolutePath,
-                        backend = Backend.GPU()
-                    )
-                } catch (eGpu: Exception) {
-                    Log.w(TAG, "GPU backend unavailable, falling back to CPU", eGpu)
-                    activeBackendName = "CPU"
-                    EngineConfig(
-                        modelPath = targetFile.absolutePath,
-                        backend = Backend.CPU()
-                    )
-                }
-
-                val newEngine = Engine(engineConfig)
-                newEngine.initialize()
-                engine = newEngine
-                isInitialized = true
-
-                Log.i(TAG, "LiteRT-LM successfully initialized on $activeBackendName!")
-                showToast("LiteRT-LM Engine Ready [$activeBackendName]")
-
-                Result.success(true)
-            } catch (e: Exception) {
-                Log.e(TAG, "LiteRT-LM Engine initialization failure: ${e.localizedMessage}", e)
-                showToast("Engine Init Failed: ${e.localizedMessage}")
-                isInitialized = false
-                Result.failure(e)
             }
         }
-    }
 
     private fun updateTelegramTicker(botToken: String?, chatId: Long?, messageId: Long?, statusText: String) {
         if (botToken.isNullOrBlank() || chatId == null || messageId == null || botToken == "YOUR_TELEGRAM_BOT_TOKEN") return
         try {
-            val url = java.net.URL("https://api.telegram.org/bot$botToken/editMessageText")
-            val conn = url.openConnection() as java.net.HttpURLConnection
+            val url = URL("https://api.telegram.org/bot$botToken/editMessageText")
+            val conn = url.openConnection() as HttpURLConnection
             conn.requestMethod = "POST"
             conn.setRequestProperty("Content-Type", "application/json")
             conn.doOutput = true
@@ -160,13 +165,11 @@ class AgentManager(private val context: Context) {
         }
     }
 
-    // Standard entry point used by AgentViewModel and MatrixAgentBridge
     suspend fun promptAgent(
         prompt: String,
         onToken: (String) -> Unit = {}
     ): String = executePromptInternal(prompt, onToken, null, null, null)
 
-    // Dedicated entry point for Telegram webhooks with live tickers
     suspend fun promptAgentWithTelegram(
         prompt: String,
         telegramBotToken: String,
@@ -183,6 +186,112 @@ class AgentManager(private val context: Context) {
         return executePromptInternal(prompt, {}, activeToken, telegramChatId, telegramMessageId)
     }
 
+    // Runs vision model with keep_alive=0 first if an image is attached, then routes to Qwen coder model
+    private suspend fun generateModelTurn(
+        systemInstruction: String,
+        userMessage: String,
+        imageBase64: String? = null
+    ): String = withContext(Dispatchers.IO) {
+        val settings = AiBackendConfig.currentSettings
+        if (settings.mode == AiBackendMode.OLLAMA) {
+            val baseUrl = settings.ollamaBaseUrl.trim().removeSuffix("/")
+            val coderModel = settings.ollamaCoderModel.ifBlank { "qwen2.5-coder:3b" }
+            val visionModel = settings.ollamaVisionModel
+
+            val effectiveUserPrompt = if (!imageBase64.isNullOrBlank() && !visionModel.isNullOrBlank()) {
+                val visionSummary = ollamaChatRequest(
+                    baseUrl = baseUrl,
+                    model = visionModel,
+                    systemPrompt = "Extract all UI text, errors, layout structure, and visual facts accurately.",
+                    userPrompt = userMessage,
+                    imageBase64 = imageBase64,
+                    keepAlive = 0
+                )
+                """
+                Visual context ($visionModel):
+                $visionSummary
+
+                Request:
+                $userMessage
+                """.trimIndent()
+            } else {
+                userMessage
+            }
+
+            ollamaChatRequest(
+                baseUrl = baseUrl,
+                model = coderModel,
+                systemPrompt = systemInstruction,
+                userPrompt = effectiveUserPrompt,
+                imageBase64 = null,
+                keepAlive = "10m"
+            )
+        } else {
+            val localEngine = engine ?: error("LiteRT-LM Engine offline or uninitialized.")
+            val conversationConfig = ConversationConfig(
+                systemInstruction = Contents.of(systemInstruction)
+            )
+            localEngine.createConversation(conversationConfig).use { conversation ->
+                conversation.sendMessage(Contents.of(userMessage)).toString()
+            }
+        }
+    }
+
+    private fun ollamaChatRequest(
+        baseUrl: String,
+        model: String,
+        systemPrompt: String,
+        userPrompt: String,
+        imageBase64: String?,
+        keepAlive: Any
+    ): String {
+        val messages = JSONArray().apply {
+            put(JSONObject().apply {
+                put("role", "system")
+                put("content", systemPrompt)
+            })
+            put(JSONObject().apply {
+                put("role", "user")
+                put("content", userPrompt)
+                if (!imageBase64.isNullOrBlank()) {
+                    put("images", JSONArray().put(imageBase64))
+                }
+            })
+        }
+
+        val payload = JSONObject().apply {
+            put("model", model)
+            put("messages", messages)
+            put("stream", false)
+            put("keep_alive", keepAlive)
+        }
+
+        val conn = (URL("$baseUrl/api/chat").openConnection() as HttpURLConnection).apply {
+            requestMethod = "POST"
+            setRequestProperty("Content-Type", "application/json")
+            doOutput = true
+            connectTimeout = 10_000
+            readTimeout = 120_000
+        }
+
+        conn.outputStream.use { it.write(payload.toString().toByteArray(Charsets.UTF_8)) }
+
+        val code = conn.responseCode
+        val body = (if (code in 200..299) conn.inputStream else conn.errorStream)
+            ?.bufferedReader()?.use { it.readText() }.orEmpty()
+        conn.disconnect()
+
+        if (code !in 200..299) {
+            error("Ollama HTTP $code: $body")
+        }
+
+        return JSONObject(body)
+            .optJSONObject("message")
+            ?.optString("content")
+            .orEmpty()
+            .trim()
+    }
+
     private suspend fun executePromptInternal(
         prompt: String,
         onToken: (String) -> Unit,
@@ -191,12 +300,11 @@ class AgentManager(private val context: Context) {
         telegramMessageId: Long?
     ): String = withContext(Dispatchers.Default) {
         inferenceMutex.withLock {
-            val localEngine = engine
-            if (!isInitialized || localEngine == null) {
+            val activeSettings = AiBackendConfig.currentSettings
+            if (activeSettings.mode == AiBackendMode.LITERT_LM && (!isInitialized || engine == null)) {
                 return@withContext "Error: LiteRT-LM Engine offline or uninitialized."
             }
 
-            // Bind current Telegram session context for security approvals
             if (telegramChatId != null) {
                 TelegramChatContext.activeChatId = telegramChatId
             }
@@ -208,23 +316,18 @@ class AgentManager(private val context: Context) {
             val lowerPrompt = trimmedPrompt.lowercase()
 
             val isActionCommand = ACTION_KEYWORDS.any { lowerPrompt.contains(it) }
-            val isCasualChat = !isActionCommand && 
-                               (lowerPrompt.matches(CASUAL_CHAT_REGEX) || lowerPrompt.split(" ").size <= 2)
+            val isCasualChat = !isActionCommand &&
+                (lowerPrompt.matches(CASUAL_CHAT_REGEX) || lowerPrompt.split(" ").size <= 2)
 
             if (isCasualChat) {
-                val conversationConfig = ConversationConfig(
-                    systemInstruction = Contents.of("You are a helpful, concise AI coding assistant running locally via Termux & Ktor on a Pixel 9. Respond in 1-2 brief English sentences only.")
+                val resultText = generateModelTurn(
+                    systemInstruction = "You are a helpful, concise AI coding assistant running on a Pixel 9 via Termux & Ktor. Respond in 1-2 brief English sentences only.",
+                    userMessage = trimmedPrompt
                 )
-                
-                localEngine.createConversation(conversationConfig).use { conversation ->
-                    val response = conversation.sendMessage(Contents.of(trimmedPrompt))
-                    val resultText = response.toString()
-                    onToken(resultText)
-                    return@withContext resultText
-                }
+                onToken(resultText)
+                return@withContext resultText
             }
 
-            // --- Performance-Optimized Autonomous Coding Agent Loop ---
             val maxSteps = 8
             val executionHistory = StringBuilder()
             val currentGoal = prompt
@@ -240,7 +343,6 @@ class AgentManager(private val context: Context) {
                 val rawScreen = screenService?.getScreenContentSummary() ?: "Accessibility offline."
                 val screenContext = if (rawScreen.length > 300) rawScreen.take(300) + "..." else rawScreen
 
-                // Keep context window tight to maximize token generation performance and prevent KV-cache bloat
                 val trimmedHistory = if (executionHistory.length > 800) {
                     executionHistory.takeLast(800)
                 } else {
@@ -248,11 +350,11 @@ class AgentManager(private val context: Context) {
                 }
 
                 val systemInstructionText = """
-                    You are an autonomous AI coding agent (Claude Code style) running on a local Android Termux & Ktor engine. Execute complex development and system tasks step-by-step.
+                    You are an autonomous AI coding agent running on a local Android Termux & Ktor engine. Execute complex development and system tasks step-by-step.
                     [NOTIFICATIONS]: $notificationContext
                     [SCREEN HIERARCHY]: $screenContext
                     [HISTORY]: $trimmedHistory
-                    
+
                     Rules:
                     - Output format:
                       TOOL: tool_name
@@ -261,13 +363,10 @@ class AgentManager(private val context: Context) {
                     - Use TOOL: finish with ARG: summary when done. Do not repeat identical tool calls.
                 """.trimIndent()
 
-                val conversationConfig = ConversationConfig(
-                    systemInstruction = Contents.of(systemInstructionText)
+                val rawModelOutput = generateModelTurn(
+                    systemInstruction = systemInstructionText,
+                    userMessage = "Task: $currentGoal\nTOOL:"
                 )
-
-                val rawModelOutput = localEngine.createConversation(conversationConfig).use { conversation ->
-                    conversation.sendMessage(Contents.of("Task: $currentGoal\nTOOL:"))
-                }.toString()
 
                 val toolIndex = rawModelOutput.indexOf("TOOL:")
                 val cleanOutput = if (toolIndex != -1) rawModelOutput.substring(toolIndex) else rawModelOutput
@@ -276,7 +375,7 @@ class AgentManager(private val context: Context) {
                 val lines = formattedOutput.lines().map { it.trim() }
                 val toolLine = lines.find { it.startsWith("TOOL:") } ?: "TOOL: unknown"
                 val argLine = lines.find { it.startsWith("ARG:") }
-                
+
                 var rawToolName = toolLine.removePrefix("TOOL:").trim().lowercase()
                 var argValue = argLine?.removePrefix("ARG:")?.trim() ?: ""
 
@@ -312,7 +411,6 @@ class AgentManager(private val context: Context) {
                     else -> rawToolName
                 }
 
-                // Update Telegram progress ticker
                 updateTelegramTicker(
                     botToken = telegramBotToken,
                     chatId = telegramChatId,
@@ -326,7 +424,6 @@ class AgentManager(private val context: Context) {
                     return@withContext "Task Finished Successfully:\n$finalSummary\n\nExecution Log:\n$executionHistory"
                 }
 
-                // Guardrail: Intercept duplicate tool loops
                 val toolResult = if (toolName == lastToolName && argValue == lastArgValue) {
                     "Error: Duplicate loop detected. You already called $toolName with argument '$argValue'. Try a different action or call finish."
                 } else {
