@@ -1,5 +1,6 @@
 package com.jeremy.ai.backend
 
+import android.app.AlarmManager
 import android.app.PendingIntent
 import android.content.BroadcastReceiver
 import android.content.Context
@@ -31,13 +32,6 @@ import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import java.io.File
-import android.os.Environment
-import android.content.Context
-import android.content.Intent
-import android.app.AlarmManager
-import android.app.PendingIntent
-import android.content.BroadcastReceiver
-import android.os.Bundle
 import java.util.Collections
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.ConcurrentHashMap
@@ -279,9 +273,7 @@ fun Application.configureServer() {
 }
 
 fun Application.configureRouting() {
-    if (::ShellSessionManager.appContext.isInitialized) {
-        AiBackendConfig.load(ShellSessionManager.appContext)
-    }
+    AiBackendConfig.load(application.applicationContext)
     val telegramBotToken = BuildConfig.TELEGRAM_BOT_TOKEN
 
     routing {

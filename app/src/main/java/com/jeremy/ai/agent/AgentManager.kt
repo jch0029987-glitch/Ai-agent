@@ -58,7 +58,7 @@ class AgentManager(private val context: Context) {
     companion object {
         private const val TAG = "AgentManager"
         private val CASUAL_CHAT_REGEX = Regex("^(hi|hello|hey|sup|what's up|who are you|help|thanks|thank you).*")
-        private val ACTION_KEYWORDS = listOf("open", "launch", "click", "tap", "type", "get", "check", "list", "show", "press", "find", "read", "patch", "write", "task:", "execute", "git", "shell", "search", "alarm", "schedule", "remind", "cron")
+        private val ACTION_KEYWORDS = listOf(
             "open", "launch", "click", "tap", "type", "get", "check", "list", "show",
             "press", "find", "read", "patch", "write", "task:", "execute", "git", "shell",
             "search", "alarm", "schedule", "remind", "cron"
