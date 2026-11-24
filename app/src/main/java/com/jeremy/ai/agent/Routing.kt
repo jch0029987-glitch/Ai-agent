@@ -273,7 +273,7 @@ fun Application.configureServer() {
 }
 
 fun Application.configureRouting() {
-    AiBackendConfig.load(application.applicationContext)
+    AiBackendConfig.load(applicationContext)
     val telegramBotToken = BuildConfig.TELEGRAM_BOT_TOKEN
 
     routing {
