@@ -563,16 +563,28 @@ fun Application.configureRouting() {
         post("/api/telegram/test") {
             val body = runCatching { call.receive<JsonObject>() }.getOrNull()
             val chatId = body?.get("chat_id")?.jsonPrimitive?.content?.toLongOrNull()
-                ?: ChatSessionManager.lastActiveTelegramChatId
+                ?: ChatSessionManager.lastActiveTelegramChatId.takeIf { it != 0L }
                 ?: BuildConfig.TELEGRAM_ALLOWED_USER_ID.toLongOrNull()
                 ?: 0L
 
             if (telegramBotToken.isBlank() || telegramBotToken == "YOUR_TELEGRAM_BOT_TOKEN_HERE") {
-                call.respond(HttpStatusCode.BadRequest, mapOf("ok" to false, "error" to "TELEGRAM_BOT_TOKEN missing"))
+                call.respond(
+                    HttpStatusCode.BadRequest,
+                    JsonObject(mapOf(
+                        "ok" to kotlinx.serialization.json.JsonPrimitive(false),
+                        "error" to kotlinx.serialization.json.JsonPrimitive("TELEGRAM_BOT_TOKEN missing")
+                    ))
+                )
                 return@post
             }
             if (chatId == 0L) {
-                call.respond(HttpStatusCode.BadRequest, mapOf("ok" to false, "error" to "No chat_id available"))
+                call.respond(
+                    HttpStatusCode.BadRequest,
+                    JsonObject(mapOf(
+                        "ok" to kotlinx.serialization.json.JsonPrimitive(false),
+                        "error" to kotlinx.serialization.json.JsonPrimitive("No chat_id available")
+                    ))
+                )
                 return@post
             }
 
@@ -580,9 +592,23 @@ fun Application.configureRouting() {
                 sendTelegramMessage(telegramBotToken, chatId, "Telegram bridge test from Ktor server (chat_id=$chatId)")
             }
             if (sentId != null) {
-                call.respond(HttpStatusCode.OK, mapOf("ok" to true, "chat_id" to chatId.toString(), "message_id" to sentId.toString()))
+                call.respond(
+                    HttpStatusCode.OK,
+                    JsonObject(mapOf(
+                        "ok" to kotlinx.serialization.json.JsonPrimitive(true),
+                        "chat_id" to kotlinx.serialization.json.JsonPrimitive(chatId.toString()),
+                        "message_id" to kotlinx.serialization.json.JsonPrimitive(sentId.toString())
+                    ))
+                )
             } else {
-                call.respond(HttpStatusCode.BadGateway, mapOf("ok" to false, "chat_id" to chatId.toString(), "error" to "Failed to send Telegram message; check logcat TelegramRouting"))
+                call.respond(
+                    HttpStatusCode.BadGateway,
+                    JsonObject(mapOf(
+                        "ok" to kotlinx.serialization.json.JsonPrimitive(false),
+                        "chat_id" to kotlinx.serialization.json.JsonPrimitive(chatId.toString()),
+                        "error" to kotlinx.serialization.json.JsonPrimitive("Failed to send Telegram message; check logcat TelegramRouting")
+                    ))
+                )
             }
         }
 
