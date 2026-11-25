@@ -11,12 +11,14 @@ import android.util.Log
 import androidx.core.app.NotificationCompat
 import io.ktor.client.*
 import io.ktor.client.engine.android.*
+import io.ktor.client.network.sockets.ConnectTimeoutException
 import io.ktor.client.plugins.*
 import io.ktor.client.request.*
 import io.ktor.client.statement.*
 import io.ktor.http.*
 import kotlinx.coroutines.*
 import org.json.JSONObject
+import java.net.SocketTimeoutException
 
 class TelegramBridgeService : Service() {
 
@@ -26,7 +28,15 @@ class TelegramBridgeService : Service() {
 
     private val client = HttpClient(Android) {
         expectSuccess = false
-        install(HttpTimeout)
+        install(HttpTimeout) {
+            connectTimeoutMillis = 15000L
+            socketTimeoutMillis = 50000L
+            requestTimeoutMillis = 50000L
+        }
+        engine {
+            connectTimeout = 15000
+            socketTimeout = 50000
+        }
     }
 
     companion object {
@@ -34,6 +44,8 @@ class TelegramBridgeService : Service() {
         private const val CHANNEL_ID = "TelegramBridgeChannel"
         private const val NOTIF_ID = 1337
         private const val MAX_TELEGRAM_CHARS = 3900
+        private const val LONG_POLL_TIMEOUT_SEC = 30
+        private val RETRYABLE_STATUS_CODES = setOf(502, 503, 504)
     }
 
     override fun onCreate() {
@@ -78,6 +90,58 @@ class TelegramBridgeService : Service() {
             .build()
     }
 
+    private fun isRetryableError(throwable: Throwable): Boolean = when (throwable) {
+        is ConnectTimeoutException,
+        is SocketTimeoutException,
+        is HttpRequestTimeoutException -> true
+        else -> throwable.cause?.let(::isRetryableError) == true
+    }
+
+    private suspend fun postTelegramWithRetry(
+        url: String,
+        jsonPayload: String,
+        maxAttempts: Int = 3,
+        baseDelayMs: Long = 500L
+    ): HttpResponse {
+        var lastResponse: HttpResponse? = null
+        var lastError: Throwable? = null
+
+        for (attempt in 1..maxAttempts) {
+            try {
+                val resp = client.post(url) {
+                    contentType(ContentType.Application.Json)
+                    setBody(jsonPayload)
+                    timeout {
+                        connectTimeoutMillis = 15000L
+                        socketTimeoutMillis = 25000L
+                        requestTimeoutMillis = 25000L
+                    }
+                }
+                lastResponse = resp
+
+                if (resp.status.value !in RETRYABLE_STATUS_CODES || attempt == maxAttempts) {
+                    return resp
+                }
+
+                val backoffMs = baseDelayMs * (1L shl (attempt - 1))
+                Log.w(TAG, "Telegram HTTP ${resp.status.value} on $url (attempt $attempt/$maxAttempts), retrying in ${backoffMs}ms")
+                delay(backoffMs)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                lastError = e
+                val canRetry = attempt < maxAttempts && isRetryableError(e)
+                if (!canRetry) throw e
+                val backoffMs = baseDelayMs * (1L shl (attempt - 1))
+                Log.w(TAG, "Transient error on $url (attempt $attempt/$maxAttempts): ${e.localizedMessage ?: e.javaClass.simpleName}, retrying in ${backoffMs}ms")
+                delay(backoffMs)
+            }
+        }
+
+        if (lastResponse != null) return lastResponse
+        throw lastError ?: IllegalStateException("Telegram request failed after $maxAttempts attempts")
+    }
+
     private fun startPolling() {
         pollingJob?.cancel()
         pollingJob = serviceScope.launch {
@@ -86,9 +150,16 @@ class TelegramBridgeService : Service() {
                     pollUpdates()
                 } catch (e: CancellationException) {
                     throw e
+                } catch (_: HttpRequestTimeoutException) {
+                    // Normal when Telegram holds long-poll open for the full timeout window with no new updates
                 } catch (e: Exception) {
-                    Log.e(TAG, "Polling exception: ${e.localizedMessage}", e)
-                    delay(5000)
+                    if (isRetryableError(e)) {
+                        Log.w(TAG, "Transient polling timeout/network hiccup: ${e.localizedMessage ?: e.javaClass.simpleName}")
+                        delay(1500)
+                    } else {
+                        Log.e(TAG, "Polling exception: ${e.localizedMessage}", e)
+                        delay(5000)
+                    }
                 }
             }
         }
@@ -98,12 +169,13 @@ class TelegramBridgeService : Service() {
         val botToken = BuildConfig.TELEGRAM_BOT_TOKEN
         val allowedUserId = BuildConfig.TELEGRAM_ALLOWED_USER_ID
 
-        val url = "https://api.telegram.org/bot$botToken/getUpdates?offset=${lastUpdateId + 1}&timeout=30"
+        val url = "https://api.telegram.org/bot$botToken/getUpdates?offset=${lastUpdateId + 1}&timeout=$LONG_POLL_TIMEOUT_SEC"
 
         val response: HttpResponse = client.get(url) {
             timeout {
-                requestTimeoutMillis = 35000
-                socketTimeoutMillis = 35000
+                connectTimeoutMillis = 15000L
+                requestTimeoutMillis = 50000L
+                socketTimeoutMillis = 50000L
             }
         }
 
@@ -139,9 +211,15 @@ class TelegramBridgeService : Service() {
                 Log.e(TAG, "Telegram API returned ok=false: $responseText")
             }
         } else {
-            Log.e(TAG, "Telegram HTTP Error ${response.status.value}: ${response.bodyAsText()}")
-            if (response.status == HttpStatusCode.Conflict) {
-                delay(5000)
+            val errBody = response.bodyAsText()
+            if (response.status.value in RETRYABLE_STATUS_CODES) {
+                Log.w(TAG, "Telegram transient HTTP ${response.status.value} on getUpdates: $errBody")
+                delay(1500)
+            } else {
+                Log.e(TAG, "Telegram HTTP Error ${response.status.value}: $errBody")
+                if (response.status == HttpStatusCode.Conflict) {
+                    delay(5000)
+                }
             }
         }
     }
@@ -179,10 +257,12 @@ class TelegramBridgeService : Service() {
                     put("action", action)
                 }.toString()
 
-                val resp = client.post("https://api.telegram.org/bot$botToken/sendChatAction") {
-                    contentType(ContentType.Application.Json)
-                    setBody(payload)
-                }
+                val resp = postTelegramWithRetry(
+                    url = "https://api.telegram.org/bot$botToken/sendChatAction",
+                    jsonPayload = payload,
+                    maxAttempts = 2,
+                    baseDelayMs = 400L
+                )
                 if (!resp.status.isSuccess()) {
                     Log.w(TAG, "sendChatAction failed (${resp.status.value}): ${resp.bodyAsText()}")
                 }
@@ -204,10 +284,10 @@ class TelegramBridgeService : Service() {
                         put("parse_mode", "Markdown")
                     }.toString()
 
-                    val resp = client.post("https://api.telegram.org/bot$botToken/sendMessage") {
-                        contentType(ContentType.Application.Json)
-                        setBody(mdPayload)
-                    }
+                    val resp = postTelegramWithRetry(
+                        url = "https://api.telegram.org/bot$botToken/sendMessage",
+                        jsonPayload = mdPayload
+                    )
 
                     if (resp.status.isSuccess()) {
                         continue
@@ -219,10 +299,10 @@ class TelegramBridgeService : Service() {
                             put("chat_id", chatId)
                             put("text", chunk)
                         }.toString()
-                        val retryResp = client.post("https://api.telegram.org/bot$botToken/sendMessage") {
-                            contentType(ContentType.Application.Json)
-                            setBody(plainPayload)
-                        }
+                        val retryResp = postTelegramWithRetry(
+                            url = "https://api.telegram.org/bot$botToken/sendMessage",
+                            jsonPayload = plainPayload
+                        )
                         if (!retryResp.status.isSuccess()) {
                             Log.e(TAG, "sendMessage plain retry failed (${retryResp.status.value}): ${retryResp.bodyAsText()}")
                         }
