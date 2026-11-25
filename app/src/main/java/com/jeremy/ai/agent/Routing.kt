@@ -7,11 +7,12 @@ import android.content.Context
 import android.content.Intent
 import android.os.Bundle
 import android.os.Environment
+import android.util.Log
 import com.jeremy.ai.agent.AgentBridge
 import com.jeremy.ai.agent.AiBackendConfig
 import com.jeremy.ai.agent.AiBackendMode
-import com.jeremy.ai.agent.BuildConfig
 import com.jeremy.ai.agent.AlarmReceiver
+import com.jeremy.ai.agent.BuildConfig
 import io.ktor.http.*
 import io.ktor.serialization.kotlinx.json.*
 import io.ktor.server.application.*
@@ -19,8 +20,6 @@ import io.ktor.server.plugins.contentnegotiation.*
 import io.ktor.server.request.*
 import io.ktor.server.response.*
 import io.ktor.server.routing.*
-import io.ktor.server.websocket.*
-import io.ktor.websocket.*
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.GlobalScope
 import kotlinx.coroutines.launch
@@ -32,7 +31,6 @@ import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import java.io.File
-import java.util.Collections
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
@@ -193,7 +191,7 @@ fun getAvailableModels(): List<OpenAIModelObject> {
                     ?.forEach { modelFile -> modelList.add(OpenAIModelObject(id = modelFile.name)) }
             }
         }
-    } catch (e: Exception) {}
+    } catch (_: Exception) {}
     if (modelList.isEmpty()) modelList.add(OpenAIModelObject(id = "gemma-4-abliterated"))
     return modelList
 }
@@ -205,6 +203,30 @@ private fun resolveWorkspaceFile(rawPath: String): File {
         trimmed.startsWith("termux:") -> File("/data/data/com.termux/files/home/", trimmed.removePrefix("termux:"))
         else -> File("/data/data/com.termux/files/home/", trimmed)
     }
+}
+
+private fun escapeJsonString(raw: String): String = raw
+    .replace("\\", "\\\\")
+    .replace("\"", "\\\"")
+    .replace("\r", "")
+    .replace("\n", "\\n")
+    .replace("\t", "\\t")
+
+private fun postTelegramRaw(endpointUrl: String, payloadJson: String): Pair<Int, String> {
+    val conn = (java.net.URL(endpointUrl).openConnection() as java.net.HttpURLConnection).apply {
+        requestMethod = "POST"
+        doOutput = true
+        connectTimeout = 10_000
+        readTimeout = 15_000
+        setRequestProperty("Content-Type", "application/json; charset=utf-8")
+    }
+    conn.outputStream.use { it.write(payloadJson.toByteArray(Charsets.UTF_8)) }
+    val code = conn.responseCode
+    val body = (if (code in 200..299) conn.inputStream else conn.errorStream)
+        ?.bufferedReader()?.use { it.readText() }.orEmpty()
+    conn.disconnect()
+    if (code == 429) throw java.io.IOException("Rate limited: $body")
+    return code to body
 }
 
 private fun <T> executeTelegramRequest(block: () -> T?): T? {
@@ -221,41 +243,57 @@ private fun <T> executeTelegramRequest(block: () -> T?): T? {
     return null
 }
 
-internal fun sendTelegramMessage(botToken: String, chatId: Long, text: String): Long? = executeTelegramRequest {
-    val url = java.net.URL("https://api.telegram.org/bot$botToken/sendMessage")
-    val conn = url.openConnection() as java.net.HttpURLConnection
-    conn.requestMethod = "POST"
-    conn.setRequestProperty("Content-Type", "application/json")
-    conn.doOutput = true
-    val payload = "{\"chat_id\": $chatId, \"text\": \"${text.replace("\"", "\\\"").replace("\n", "\\n")}\", \"parse_mode\": \"Markdown\"}"
-    conn.outputStream.write(payload.toByteArray())
-    if (conn.responseCode == 200) {
-        val responseStr = conn.inputStream.bufferedReader().use { it.readText() }
-        "\"message_id\":(\\d+)".toRegex().find(responseStr)?.groupValues?.get(1)?.toLongOrNull()
-    } else if (conn.responseCode == 429) throw java.io.IOException("Rate limited") else null
+internal fun sendTelegramMessage(botToken: String, chatId: Long, text: String): Long? {
+    if (botToken.isBlank() || botToken == "YOUR_TELEGRAM_BOT_TOKEN_HERE") {
+        Log.e("TelegramRouting", "sendTelegramMessage skipped: botToken is blank or placeholder")
+        return null
+    }
+    val endpoint = "https://api.telegram.org/bot$botToken/sendMessage"
+    var lastMessageId: Long? = null
+
+    for (chunk in text.chunked(3900)) {
+        val escaped = escapeJsonString(chunk)
+        val msgId = executeTelegramRequest {
+            val mdPayload = "{\"chat_id\": $chatId, \"text\": \"$escaped\", \"parse_mode\": \"Markdown\"}"
+            var (code, body) = postTelegramRaw(endpoint, mdPayload)
+            if (code == 400 && body.contains("parse entities", ignoreCase = true)) {
+                val plainPayload = "{\"chat_id\": $chatId, \"text\": \"$escaped\"}"
+                val retry = postTelegramRaw(endpoint, plainPayload)
+                code = retry.first
+                body = retry.second
+            }
+            if (code in 200..299) {
+                "\"message_id\":(\\d+)".toRegex().find(body)?.groupValues?.get(1)?.toLongOrNull()
+            } else {
+                Log.e("TelegramRouting", "sendMessage failed ($code): $body")
+                null
+            }
+        }
+        if (msgId != null) lastMessageId = msgId
+    }
+    return lastMessageId
 }
 
 internal fun editTelegramMessage(botToken: String, chatId: Long, messageId: Long, newText: String): Int? = executeTelegramRequest {
-    val url = java.net.URL("https://api.telegram.org/bot$botToken/editMessageText")
-    val conn = url.openConnection() as java.net.HttpURLConnection
-    conn.requestMethod = "POST"
-    conn.setRequestProperty("Content-Type", "application/json")
-    conn.doOutput = true
-    val payload = "{\"chat_id\": $chatId, \"message_id\": $messageId, \"text\": \"${newText.replace("\"", "\\\"").replace("\n", "\\n")}\", \"parse_mode\": \"Markdown\"}"
-    conn.outputStream.write(payload.toByteArray())
-    if (conn.responseCode == 429) throw java.io.IOException("Rate limited")
-    conn.responseCode
+    if (botToken.isBlank() || botToken == "YOUR_TELEGRAM_BOT_TOKEN_HERE") return@executeTelegramRequest null
+    val escaped = escapeJsonString(newText.take(3900))
+    val endpoint = "https://api.telegram.org/bot$botToken/editMessageText"
+    val mdPayload = "{\"chat_id\": $chatId, \"message_id\": $messageId, \"text\": \"$escaped\", \"parse_mode\": \"Markdown\"}"
+    var (code, body) = postTelegramRaw(endpoint, mdPayload)
+    if (code == 400 && body.contains("parse entities", ignoreCase = true)) {
+        val plainPayload = "{\"chat_id\": $chatId, \"message_id\": $messageId, \"text\": \"$escaped\"}"
+        code = postTelegramRaw(endpoint, plainPayload).first
+    }
+    code
 }
 
 private fun answerCallbackQuery(botToken: String, callbackQueryId: String): Int? = executeTelegramRequest {
-    val url = java.net.URL("https://api.telegram.org/bot$botToken/answerCallbackQuery")
-    val conn = url.openConnection() as java.net.HttpURLConnection
-    conn.requestMethod = "POST"
-    conn.setRequestProperty("Content-Type", "application/json")
-    conn.doOutput = true
-    conn.outputStream.write("{\"callback_query_id\": \"$callbackQueryId\"}".toByteArray())
-    if (conn.responseCode == 429) throw java.io.IOException("Rate limited")
-    conn.responseCode
+    if (botToken.isBlank() || botToken == "YOUR_TELEGRAM_BOT_TOKEN_HERE") return@executeTelegramRequest null
+    val escapedId = escapeJsonString(callbackQueryId)
+    postTelegramRaw(
+        "https://api.telegram.org/bot$botToken/answerCallbackQuery",
+        "{\"callback_query_id\": \"$escapedId\"}"
+    ).first
 }
 
 // ==========================================
@@ -397,7 +435,6 @@ fun Application.configureRouting() {
                                 }
                                 val triggerTime = System.currentTimeMillis() + delayMillis
 
-                                // Schedule exact alarm via AlarmManager -> AlarmReceiver -> WorkManager
                                 val context = ShellSessionManager.appContext
                                 val alarmManager = context.getSystemService(Context.ALARM_SERVICE) as AlarmManager
                                 val intent = Intent(context, AlarmReceiver::class.java).apply {
@@ -417,7 +454,7 @@ fun Application.configureRouting() {
                                     } else {
                                         alarmManager.setExactAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, triggerTime, pendingIntent)
                                     }
-                                } catch (e: SecurityException) {
+                                } catch (_: SecurityException) {
                                     alarmManager.set(AlarmManager.RTC_WAKEUP, triggerTime, pendingIntent)
                                 }
 
@@ -522,6 +559,33 @@ fun Application.configureRouting() {
             }
         }
 
+        // --- Telegram Test Endpoint ---
+        post("/api/telegram/test") {
+            val body = runCatching { call.receive<JsonObject>() }.getOrNull()
+            val chatId = body?.get("chat_id")?.jsonPrimitive?.content?.toLongOrNull()
+                ?: ChatSessionManager.lastActiveTelegramChatId
+                ?: BuildConfig.TELEGRAM_ALLOWED_USER_ID.toLongOrNull()
+                ?: 0L
+
+            if (telegramBotToken.isBlank() || telegramBotToken == "YOUR_TELEGRAM_BOT_TOKEN_HERE") {
+                call.respond(HttpStatusCode.BadRequest, mapOf("ok" to false, "error" to "TELEGRAM_BOT_TOKEN missing"))
+                return@post
+            }
+            if (chatId == 0L) {
+                call.respond(HttpStatusCode.BadRequest, mapOf("ok" to false, "error" to "No chat_id available"))
+                return@post
+            }
+
+            val sentId = withContext(Dispatchers.IO) {
+                sendTelegramMessage(telegramBotToken, chatId, "Telegram bridge test from Ktor server (chat_id=$chatId)")
+            }
+            if (sentId != null) {
+                call.respond(HttpStatusCode.OK, mapOf("ok" to true, "chat_id" to chatId.toString(), "message_id" to sentId.toString()))
+            } else {
+                call.respond(HttpStatusCode.BadGateway, mapOf("ok" to false, "chat_id" to chatId.toString(), "error" to "Failed to send Telegram message; check logcat TelegramRouting"))
+            }
+        }
+
         // --- Telegram Webhook Endpoint ---
         post("/api/telegram/webhook") {
             try {
@@ -564,7 +628,6 @@ fun Application.configureRouting() {
                         return@post
                     }
 
-                    // Respond immediately to Python so it never hangs or times out
                     call.respond(HttpStatusCode.OK, mapOf("response" to "⚙️ Processing request..."))
                     val activeBackend = AiBackendConfig.currentSettings
                     val backendLabel = if (activeBackend.mode == AiBackendMode.OLLAMA) {
@@ -572,14 +635,8 @@ fun Application.configureRouting() {
                     } else {
                         "LiteRT-LM"
                     }
-                    val statusMessageId = sendTelegramMessage(telegramBotToken, chatId, "⚙️ *Agent Initializing [$backendLabel]...*\n`Processing prompt`")
-                    val history = ChatSessionManager.getHistory(clientId)
-                    val fullPrompt = buildString {
-                        for ((role, msg) in history) append("$role: $msg\n")
-                        append("User: $text\nAssistant:")
-                    }
+                    sendTelegramMessage(telegramBotToken, chatId, "⚙️ *Agent Initializing [$backendLabel]...*\n`Processing prompt`")
 
-                    // Execute the multi-step agent loop asynchronously in the background
                     GlobalScope.launch(Dispatchers.Default) {
                         try {
                             val history = ChatSessionManager.getHistory(clientId)
@@ -599,7 +656,6 @@ fun Application.configureRouting() {
                             ChatSessionManager.appendMessage(clientId, "User", text)
                             ChatSessionManager.appendMessage(clientId, "Assistant", finalResponse)
 
-                            // Push final response directly to Telegram chat
                             sendTelegramMessage(telegramBotToken, chatId, finalResponse)
                         } catch (e: Exception) {
                             sendTelegramMessage(telegramBotToken, chatId, "❌ Error executing task: ${e.localizedMessage}")
@@ -607,7 +663,7 @@ fun Application.configureRouting() {
                     }
                     return@post
                 }
-                
+
                 call.respond(HttpStatusCode.OK, mapOf("response" to "Received update with no text message."))
             } catch (e: Exception) {
                 call.respond(HttpStatusCode.InternalServerError, mapOf("response" to "❌ Internal error: ${e.localizedMessage ?: "Unknown error"}"))
