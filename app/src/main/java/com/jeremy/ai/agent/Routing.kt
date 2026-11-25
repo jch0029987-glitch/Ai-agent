@@ -273,8 +273,9 @@ fun Application.configureServer() {
 }
 
 fun Application.configureRouting() {
-    if (ShellSessionManager::appContext.isInitialized) {
+    try {
         AiBackendConfig.load(ShellSessionManager.appContext)
+    } catch (_: UninitializedPropertyAccessException) {
     }
     val telegramBotToken = BuildConfig.TELEGRAM_BOT_TOKEN
 
