@@ -23,12 +23,13 @@ jobs:
         run: chmod +x gradlew
 
       - name: Decode Keystore
-        if: ${{ secrets.SIGNING_KEY != '' }}
         env:
           SIGNING_KEY: ${{ secrets.SIGNING_KEY }}
           KEYSTORE_PATH: app/release-keystore.jks
         run: |
-          echo "$SIGNING_KEY" | tr -d '[:space:]' | base64 --decode > "$KEYSTORE_PATH"
+          if [ -n "$SIGNING_KEY" ]; then
+            echo "$SIGNING_KEY" | tr -d '[:space:]' | base64 --decode > "$KEYSTORE_PATH"
+          fi
 
       - name: Build Release APK
         env:
