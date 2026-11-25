@@ -21,9 +21,9 @@ import org.json.JSONObject
 class TelegramBridgeService : Service() {
 
     private val serviceScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
+    private var pollingJob: Job? = null
     private var lastUpdateId = 0L
-    
-    // Switch engine from CIO to Android to seamlessly align with Android network security configs
+
     private val client = HttpClient(Android) {
         expectSuccess = false
         install(HttpTimeout)
@@ -33,6 +33,7 @@ class TelegramBridgeService : Service() {
         private const val TAG = "TelegramBridge"
         private const val CHANNEL_ID = "TelegramBridgeChannel"
         private const val NOTIF_ID = 1337
+        private const val MAX_TELEGRAM_CHARS = 3900
     }
 
     override fun onCreate() {
@@ -49,8 +50,10 @@ class TelegramBridgeService : Service() {
             return START_NOT_STICKY
         }
 
-        Log.i(TAG, "Telegram Ktor Polling Starting...")
-        startPolling()
+        if (pollingJob?.isActive != true) {
+            Log.i(TAG, "Telegram Ktor Polling Starting...")
+            startPolling()
+        }
         return START_STICKY
     }
 
@@ -76,10 +79,13 @@ class TelegramBridgeService : Service() {
     }
 
     private fun startPolling() {
-        serviceScope.launch {
+        pollingJob?.cancel()
+        pollingJob = serviceScope.launch {
             while (isActive) {
                 try {
                     pollUpdates()
+                } catch (e: CancellationException) {
+                    throw e
                 } catch (e: Exception) {
                     Log.e(TAG, "Polling exception: ${e.localizedMessage}", e)
                     delay(5000)
@@ -91,9 +97,9 @@ class TelegramBridgeService : Service() {
     private suspend fun pollUpdates() {
         val botToken = BuildConfig.TELEGRAM_BOT_TOKEN
         val allowedUserId = BuildConfig.TELEGRAM_ALLOWED_USER_ID
-        
+
         val url = "https://api.telegram.org/bot$botToken/getUpdates?offset=${lastUpdateId + 1}&timeout=30"
-        
+
         val response: HttpResponse = client.get(url) {
             timeout {
                 requestTimeoutMillis = 35000
@@ -113,14 +119,14 @@ class TelegramBridgeService : Service() {
                     if (update.has("message")) {
                         val message = update.getJSONObject("message")
                         val fromUser = message.optJSONObject("from")
-                        val senderId = fromUser?.getLong("id")?.toString() ?: ""
+                        val senderId = fromUser?.optLong("id")?.toString() ?: ""
                         val chatId = message.getJSONObject("chat").getLong("id").toString()
                         val text = message.optString("text", "")
 
                         Log.i(TAG, "Received message: '$text' from sender: $senderId")
 
                         if (allowedUserId.isNotBlank() && senderId != allowedUserId) {
-                            sendTelegramResponse(chatId, "⚠️ Unauthorized user ID: `$senderId`")
+                            sendTelegramResponse(chatId, "Unauthorized user ID: $senderId")
                             continue
                         }
 
@@ -129,16 +135,21 @@ class TelegramBridgeService : Service() {
                         }
                     }
                 }
+            } else {
+                Log.e(TAG, "Telegram API returned ok=false: $responseText")
             }
         } else {
             Log.e(TAG, "Telegram HTTP Error ${response.status.value}: ${response.bodyAsText()}")
+            if (response.status == HttpStatusCode.Conflict) {
+                delay(5000)
+            }
         }
     }
 
     private fun processRemoteCommand(chatId: String, prompt: String, botToken: String, messageId: Long) {
         serviceScope.launch {
             sendChatAction(chatId, "typing")
-            sendTelegramResponse(chatId, "⚙️ Processing request...")
+            sendTelegramResponse(chatId, "Processing request...")
 
             try {
                 val finalOutput = AgentBridge.processPromptWithTelegramUpdates(
@@ -148,12 +159,13 @@ class TelegramBridgeService : Service() {
                     messageId = messageId
                 )
 
-                val responseText = if (!finalOutput.isNullOrBlank()) finalOutput else "✅ Task completed."
+                val responseText = if (!finalOutput.isNullOrBlank()) finalOutput else "Task completed."
                 sendTelegramResponse(chatId, responseText)
-
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Exception) {
                 Log.e(TAG, "Agent execution error", e)
-                sendTelegramResponse(chatId, "🔴 Agent Error: ${e.localizedMessage}")
+                sendTelegramResponse(chatId, "Agent Error: ${e.localizedMessage ?: e.javaClass.simpleName}")
             }
         }
     }
@@ -167,9 +179,12 @@ class TelegramBridgeService : Service() {
                     put("action", action)
                 }.toString()
 
-                client.post("https://api.telegram.org/bot$botToken/sendChatAction") {
+                val resp = client.post("https://api.telegram.org/bot$botToken/sendChatAction") {
                     contentType(ContentType.Application.Json)
                     setBody(payload)
+                }
+                if (!resp.status.isSuccess()) {
+                    Log.w(TAG, "sendChatAction failed (${resp.status.value}): ${resp.bodyAsText()}")
                 }
             } catch (e: Exception) {
                 Log.e(TAG, "Failed to send chat action", e)
@@ -181,15 +196,39 @@ class TelegramBridgeService : Service() {
         serviceScope.launch {
             try {
                 val botToken = BuildConfig.TELEGRAM_BOT_TOKEN
-                val payload = JSONObject().apply {
-                    put("chat_id", chatId)
-                    put("text", text)
-                    put("parse_mode", "Markdown")
-                }.toString()
+                val chunks = text.chunked(MAX_TELEGRAM_CHARS)
+                for (chunk in chunks) {
+                    val mdPayload = JSONObject().apply {
+                        put("chat_id", chatId)
+                        put("text", chunk)
+                        put("parse_mode", "Markdown")
+                    }.toString()
 
-                client.post("https://api.telegram.org/bot$botToken/sendMessage") {
-                    contentType(ContentType.Application.Json)
-                    setBody(payload)
+                    val resp = client.post("https://api.telegram.org/bot$botToken/sendMessage") {
+                        contentType(ContentType.Application.Json)
+                        setBody(mdPayload)
+                    }
+
+                    if (resp.status.isSuccess()) {
+                        continue
+                    }
+
+                    val errBody = resp.bodyAsText()
+                    if (resp.status == HttpStatusCode.BadRequest && errBody.contains("parse entities", ignoreCase = true)) {
+                        val plainPayload = JSONObject().apply {
+                            put("chat_id", chatId)
+                            put("text", chunk)
+                        }.toString()
+                        val retryResp = client.post("https://api.telegram.org/bot$botToken/sendMessage") {
+                            contentType(ContentType.Application.Json)
+                            setBody(plainPayload)
+                        }
+                        if (!retryResp.status.isSuccess()) {
+                            Log.e(TAG, "sendMessage plain retry failed (${retryResp.status.value}): ${retryResp.bodyAsText()}")
+                        }
+                    } else {
+                        Log.e(TAG, "sendMessage failed (${resp.status.value}): $errBody")
+                    }
                 }
             } catch (e: Exception) {
                 Log.e(TAG, "Failed to send reply", e)
@@ -200,8 +239,9 @@ class TelegramBridgeService : Service() {
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onDestroy() {
-        super.onDestroy()
-        client.close()
+        pollingJob?.cancel()
         serviceScope.cancel()
+        client.close()
+        super.onDestroy()
     }
 }
