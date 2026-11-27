@@ -337,6 +337,7 @@ class AgentManager(private val context: Context) {
 
             var lastToolName = ""
             var lastArgValue = ""
+            var lastSuccessfulResult: String? = null
 
             for (step in 1..maxSteps) {
                 val rawNotification = AgentNotificationListener.getContextSummary()
@@ -439,6 +440,12 @@ class AgentManager(private val context: Context) {
                 }
 
                 val isDuplicateCall = toolName == lastToolName && argValue == lastArgValue
+                if (isDuplicateCall && lastSuccessfulResult != null) {
+                    val autoSummary = lastSuccessfulResult
+                    onToken(autoSummary)
+                    return@withContext "Task Finished Successfully:\n$autoSummary\n\nExecution Log:\n$executionHistory"
+                }
+
                 val toolResult = if (isDuplicateCall) {
                     "Already executed $toolName with '$argValue'. Do not repeat it; call TOOL: finish with ARG: your final answer now."
                 } else {
@@ -454,6 +461,14 @@ class AgentManager(private val context: Context) {
                 }
 
                 executionHistory.append("Step $step -> $toolName($argValue): $toolResult\n")
+
+                if (!isDuplicateCall) {
+                    lastSuccessfulResult = if (!toolResult.contains("Error:", ignoreCase = true)) {
+                        toolResult
+                    } else {
+                        null
+                    }
+                }
 
                 val isRepeatedRealError = !isDuplicateCall &&
                     toolResult.contains("Error:", ignoreCase = true) &&

@@ -55,7 +55,7 @@ class AgentToolRouter(
                 "back", "navigate_back" -> "go_back"
                 "recents", "overview" -> "open_recents"
                 "read_file", "cat" -> "read_file"
-                "write_patch", "patch_file", "write_file" -> "write_patch"
+                "write_patch", "patch_file" -> "write_patch"
                 "shell", "bash", "cmd" -> "execute_shell"
                 "alarm", "schedule", "remind", "reminder" -> "schedule_alarm"
                 "cron", "cron_job" -> "add_cron_job"
@@ -320,10 +320,78 @@ class AgentToolRouter(
                 }
             }
 
-            "Tool: $toolName\nResult: $executionResult"
+            val readableResult = formatToolOutput(toolName, executionResult).take(3500)
+            "Tool: $toolName\nResult: $readableResult"
         } catch (e: Exception) {
             "Execution Error: ${e.localizedMessage}\n\nRaw Output:\n$rawOutput"
         }
+    }
+
+    private fun formatToolOutput(toolName: String, raw: String): String {
+        val trimmed = raw.trim()
+        val jsonObj = extractJsonObject(trimmed) ?: return trimmed.replace("\\n", "\n")
+
+        val resultObj = jsonObj.optJSONObject("result") ?: jsonObj
+        val ok = resultObj.optBoolean("ok", jsonObj.optBoolean("ok", true))
+        val exitCode = resultObj.optInt("exit_code", Int.MIN_VALUE)
+        val rawOutput = when {
+            resultObj.has("output") -> resultObj.optString("output", "")
+            resultObj.has("stdout") -> resultObj.optString("stdout", "")
+            jsonObj.has("output") -> jsonObj.optString("output", "")
+            else -> ""
+        }.replace("\\n", "\n").trim()
+
+        val errorText = resultObj.optString("error", jsonObj.optString("error", "")).trim()
+
+        if (!ok || errorText.isNotEmpty() || (exitCode != Int.MIN_VALUE && exitCode != 0)) {
+            val codePart = if (exitCode != Int.MIN_VALUE) " (exit $exitCode)" else ""
+            val detail = listOfNotNull(
+                errorText.takeIf { it.isNotEmpty() },
+                rawOutput.takeIf { it.isNotEmpty() }
+            ).joinToString("\n")
+            return "Error$codePart: ${detail.ifBlank { trimmed }}"
+        }
+
+        return when (toolName) {
+            "adb" -> {
+                val device = jsonObj.optString(
+                    "device",
+                    resultObj.optString("device", "ADB device")
+                )
+                val focusedApp = Regex("""mFocusedApp=ActivityRecord\{[^ ]+\s+\S+\s+([^/\s}]+)""")
+                    .find(rawOutput)?.groupValues?.getOrNull(1)
+                val currentFocus = Regex("""mCurrentFocus=([^\n]+)""")
+                    .find(rawOutput)?.groupValues?.getOrNull(1)?.trim()
+
+                buildString {
+                    append("Device: $device")
+                    if (!focusedApp.isNullOrBlank()) {
+                        append(" | Foreground app: $focusedApp")
+                    }
+                    if (!currentFocus.isNullOrBlank() && currentFocus != "null") {
+                        append("\nCurrent focus: $currentFocus")
+                    }
+                    if (focusedApp.isNullOrBlank() && rawOutput.isNotBlank()) {
+                        append("\n$rawOutput")
+                    }
+                }.trim()
+            }
+            else -> rawOutput.ifBlank {
+                resultObj.toString(2)
+            }
+        }
+    }
+
+    private fun extractJsonObject(text: String): JSONObject? {
+        if (text.startsWith("{")) {
+            runCatching { return JSONObject(text) }
+        }
+        val start = text.indexOf('{')
+        val end = text.lastIndexOf('}')
+        if (start != -1 && end > start) {
+            return runCatching { JSONObject(text.substring(start, end + 1)) }.getOrNull()
+        }
+        return null
     }
 
     private suspend fun runAgentToolsScript(
