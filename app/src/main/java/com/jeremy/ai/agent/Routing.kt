@@ -43,6 +43,28 @@ object TelegramApprovalStore {
     val pendingApprovals = ConcurrentHashMap<String, CompletableFuture<Boolean>>()
 }
 
+object PairingPromptManager {
+    private val pendingPairings = ConcurrentHashMap<String, CompletableFuture<String?>>()
+
+    fun awaitPairing(sessionKey: String): CompletableFuture<String?> =
+        CompletableFuture<String?>().also { pendingPairings[sessionKey] = it }
+
+    fun submitPairing(sessionKey: String, input: String): Boolean =
+        pendingPairings.remove(sessionKey)?.complete(input.trim()) != null
+
+    fun cancel(sessionKey: String) {
+        pendingPairings.remove(sessionKey)?.cancel(false)
+    }
+
+    fun awaitWithTimeout(sessionKey: String, timeoutSec: Long = 90L): String? =
+        try {
+            awaitPairing(sessionKey).get(timeoutSec, TimeUnit.SECONDS)
+        } catch (_: Exception) {
+            cancel(sessionKey)
+            null
+        }
+}
+
 object ChatSessionManager {
     private val sessions = ConcurrentHashMap<String, MutableList<Pair<String, String>>>()
     var lastActiveTelegramChatId: Long = 0L
@@ -61,7 +83,7 @@ object ShellSessionManager {
     private val pendingResults = ConcurrentHashMap<Int, CompletableFuture<String>>()
     private val atomicId = AtomicInteger(0)
 
-    fun executeCommand(context: Context, chatId: Long, command: String): String {
+    fun executeCommand(context: Context, chatId: Long, command: String, timeoutSeconds: Long = 30L): String {
         val currentDir = workingDirectories.getOrPut(chatId) { File("/data/data/com.termux/files/home") }
 
         if (command.trim().startsWith("cd ")) {
@@ -104,7 +126,7 @@ object ShellSessionManager {
             context.startForegroundService(intent)
 
             return try {
-                future.get(5, TimeUnit.SECONDS) ?: "Command executed with no output."
+                future.get(timeoutSeconds, TimeUnit.SECONDS) ?: "Command executed with no output."
             } catch (e: java.util.concurrent.TimeoutException) {
                 "Error: Termux execution timed out waiting for callback."
             } finally {

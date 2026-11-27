@@ -12,6 +12,7 @@ import com.google.ai.edge.litertlm.ConversationConfig
 import com.google.ai.edge.litertlm.Engine
 import com.google.ai.edge.litertlm.EngineConfig
 import com.jeremy.ai.agent.services.AgentNotificationListener
+import com.jeremy.ai.backend.ShellSessionManager
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -51,6 +52,7 @@ class AgentManager(private val context: Context) {
     private val toolRouter = AgentToolRouter(context, githubClient)
 
     init {
+        ShellSessionManager.appContext = context.applicationContext
         AiBackendConfig.load(context)
         AgentBridge.agentManager = this
     }
@@ -61,7 +63,8 @@ class AgentManager(private val context: Context) {
         private val ACTION_KEYWORDS = listOf(
             "open", "launch", "click", "tap", "type", "get", "check", "list", "show",
             "press", "find", "read", "patch", "write", "task:", "execute", "git", "shell",
-            "search", "alarm", "schedule", "remind", "cron"
+            "search", "alarm", "schedule", "remind", "cron", "scan", "network", "adb",
+            "roku", "kodi", "ssh", "ping", "tv", "pair"
         )
     }
 
@@ -158,8 +161,9 @@ class AgentManager(private val context: Context) {
 
             val escapedText = statusText.replace("\"", "\\\"").replace("\n", "\\n")
             val payload = "{\"chat_id\": $chatId, \"message_id\": $messageId, \"text\": \"$escapedText\", \"parse_mode\": \"Markdown\"}"
-            conn.outputStream.write(payload.toByteArray())
+            conn.outputStream.use { it.write(payload.toByteArray(Charsets.UTF_8)) }
             conn.responseCode
+            conn.disconnect()
         } catch (e: Exception) {
             Log.w(TAG, "Failed to update Telegram ticker", e)
         }
@@ -186,7 +190,6 @@ class AgentManager(private val context: Context) {
         return executePromptInternal(prompt, {}, activeToken, telegramChatId, telegramMessageId)
     }
 
-    // Runs vision model with keep_alive=0 first if an image is attached, then routes to Qwen coder model
     private suspend fun generateModelTurn(
         systemInstruction: String,
         userMessage: String,
@@ -350,7 +353,7 @@ class AgentManager(private val context: Context) {
                 }
 
                 val systemInstructionText = """
-                    You are an autonomous AI coding agent running on a local Android Termux & Ktor engine. Execute complex development and system tasks step-by-step.
+                    You are an autonomous AI coding and network agent running on a local Android Termux & Ktor engine. Execute complex tasks step-by-step.
                     [NOTIFICATIONS]: $notificationContext
                     [SCREEN HIERARCHY]: $screenContext
                     [HISTORY]: $trimmedHistory
@@ -359,7 +362,7 @@ class AgentManager(private val context: Context) {
                     - Output format:
                       TOOL: tool_name
                       ARG: argument_value
-                    - Available Tools: execute_shell, patch_file, search_code, read_file, write_patch, open_browser, github_get_issues, get_screen_content, get_recent_notifications, open_app, get_installed_apps, click_text, type_text, tap_xy, scroll_down, scroll_up, go_home, go_back, schedule_alarm, add_cron_job, finish
+                    - Available Tools: network_scan, service_ping, adb, roku, kodi, ssh, execute_shell, patch_file, search_code, read_file, write_patch, open_browser, github_get_issues, get_screen_content, get_recent_notifications, open_app, get_installed_apps, click_text, type_text, tap_xy, scroll_down, scroll_up, go_home, go_back, schedule_alarm, add_cron_job, finish
                     - Use TOOL: finish with ARG: summary when done. Do not repeat identical tool calls.
                 """.trimIndent()
 
@@ -408,6 +411,8 @@ class AgentManager(private val context: Context) {
                     "shell", "bash", "cmd" -> "execute_shell"
                     "alarm", "schedule", "remind", "reminder" -> "schedule_alarm"
                     "cron", "cron_job" -> "add_cron_job"
+                    "scan", "network", "lan_scan" -> "network_scan"
+                    "ping", "services", "health_check" -> "service_ping"
                     else -> rawToolName
                 }
 
@@ -428,14 +433,13 @@ class AgentManager(private val context: Context) {
                     "Error: Duplicate loop detected. You already called $toolName with argument '$argValue'. Try a different action or call finish."
                 } else {
                     val result = toolRouter.executeToolCall("TOOL: $toolName\nARG: $argValue")
-                    
-                    // AUTO-FINISH HACK FOR LOCAL MODELS: If schedule_alarm succeeded, force an immediate exit and reply
+
                     if (toolName == "schedule_alarm" && result.startsWith("Successfully scheduled")) {
                         val finalSummary = "Task successfully completed: $result"
                         onToken(finalSummary)
                         return@withContext "Task Finished Successfully:\n$finalSummary"
                     }
-                    
+
                     result
                 }
 

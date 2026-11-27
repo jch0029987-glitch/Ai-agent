@@ -6,9 +6,12 @@ import android.content.Context
 import android.content.Intent
 import android.os.Build
 import android.os.Environment
+import com.jeremy.ai.backend.PairingPromptManager
+import com.jeremy.ai.backend.ShellSessionManager
 import com.jeremy.ai.backend.TelegramApprovalStore
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import org.json.JSONObject
 import java.io.File
 import java.util.UUID
 import java.util.concurrent.CompletableFuture
@@ -22,19 +25,23 @@ class AgentToolRouter(
     private val context: Context,
     private val githubClient: GitHubToolClient
 ) {
+    init {
+        ShellSessionManager.appContext = context.applicationContext
+    }
+
     suspend fun executeToolCall(rawOutput: String): String {
         return try {
             val lines = rawOutput.lines()
                 .map { it.trim() }
                 .filter { it.isNotEmpty() }
 
-            val toolLine = lines.find { it.startsWith("TOOL:") } ?: return "Error: No TOOL specified in output.\n\nRaw:\n$rawOutput"
+            val toolLine = lines.find { it.startsWith("TOOL:") }
+                ?: return "Error: No TOOL specified in output.\n\nRaw:\n$rawOutput"
             val argLine = lines.find { it.startsWith("ARG:") }
 
             val rawToolName = toolLine.removePrefix("TOOL:").trim().lowercase()
             val argValue = argLine?.removePrefix("ARG:")?.trim() ?: ""
 
-            // Normalize minor model hallucinations / synonyms to actual tools
             val toolName = when (rawToolName) {
                 "activate_network", "launch_browser", "open_url" -> "open_browser"
                 "launch_app", "start_app" -> "open_app"
@@ -49,10 +56,11 @@ class AgentToolRouter(
                 "write_patch", "patch_file", "write_file" -> "write_patch"
                 "alarm", "schedule", "remind", "reminder" -> "schedule_alarm"
                 "cron", "cron_job" -> "add_cron_job"
+                "scan", "network", "lan_scan" -> "network_scan"
+                "ping", "services", "health_check" -> "service_ping"
                 else -> rawToolName
             }
 
-            // 1. Human-in-the-Loop Guardrail: Intercept high-stakes or UI modification / file editing actions via Telegram
             if (isSensitiveTool(toolName)) {
                 val approved = requestUserApproval(toolName, argValue)
                 if (!approved) {
@@ -62,8 +70,58 @@ class AgentToolRouter(
 
             val screenService = AgentAccessibilityService.instance
 
-            // 2. Execute approved tool action
             val executionResult = when (toolName) {
+                "network_scan" -> {
+                    val argsJson = if (argValue.isBlank()) {
+                        "{}"
+                    } else if (argValue.trim().startsWith("{")) {
+                        argValue
+                    } else {
+                        JSONObject().put("subnet_prefix", argValue.trim()).toString()
+                    }
+                    runAgentToolsScript("network_scan", argsJson, timeoutSeconds = 60L)
+                }
+                "service_ping" -> {
+                    val argsJson = if (argValue.isBlank()) {
+                        "{}"
+                    } else if (argValue.trim().startsWith("{")) {
+                        argValue
+                    } else {
+                        JSONObject().put("service", argValue.trim()).toString()
+                    }
+                    runAgentToolsScript("service_ping", argsJson, timeoutSeconds = 20L)
+                }
+                "adb" -> {
+                    val argsJson = buildAdbArgsJson(argValue)
+                    val firstOutput = runAgentToolsScript("adb", argsJson, timeoutSeconds = 90L)
+                    if (looksLikeAdbPairingError(firstOutput)) {
+                        handleAdbPairingFallback(argsJson, firstOutput)
+                    } else {
+                        firstOutput
+                    }
+                }
+                "roku" -> {
+                    val argsJson = buildDeviceActionArgsJson(
+                        argValue = argValue,
+                        defaultDevice = "roku",
+                        defaultAction = "active_app",
+                        actionKey = "action"
+                    )
+                    runAgentToolsScript("roku", argsJson, timeoutSeconds = 20L)
+                }
+                "kodi" -> {
+                    val argsJson = buildDeviceActionArgsJson(
+                        argValue = argValue,
+                        defaultDevice = "kodi",
+                        defaultAction = "Player.GetActivePlayers",
+                        actionKey = "method"
+                    )
+                    runAgentToolsScript("kodi", argsJson, timeoutSeconds = 20L)
+                }
+                "ssh" -> {
+                    val argsJson = buildSshArgsJson(argValue)
+                    runAgentToolsScript("ssh", argsJson, timeoutSeconds = 30L)
+                }
                 "open_browser" -> {
                     val url = if (argValue.isNotEmpty()) argValue else "https://google.com"
                     DeviceTools.openBrowser(context, url)
@@ -84,11 +142,15 @@ class AgentToolRouter(
                     if (argValue.isBlank()) {
                         "Error: File path argument is missing."
                     } else {
-                        val file = if (argValue.startsWith("/")) File(argValue) else File(Environment.getExternalStorageDirectory(), argValue)
+                        val file = if (argValue.startsWith("/")) {
+                            File(argValue)
+                        } else {
+                            File(Environment.getExternalStorageDirectory(), argValue)
+                        }
                         if (!file.exists()) {
                             "Error: File does not exist at path: ${file.absolutePath}"
                         } else {
-                            file.readText().take(3000) // Read safely up to 3000 chars
+                            file.readText().take(3000)
                         }
                     }
                 }
@@ -100,7 +162,11 @@ class AgentToolRouter(
                         val path = parts[0].trim()
                         val content = parts[1].trim()
                         try {
-                            val file = if (path.startsWith("/")) File(path) else File(Environment.getExternalStorageDirectory(), path)
+                            val file = if (path.startsWith("/")) {
+                                File(path)
+                            } else {
+                                File(Environment.getExternalStorageDirectory(), path)
+                            }
                             file.parentFile?.mkdirs()
                             file.writeText(content)
                             "Successfully wrote/patched file at ${file.absolutePath}"
@@ -124,37 +190,15 @@ class AgentToolRouter(
                             val triggerTime = System.currentTimeMillis() + delayMillis
 
                             val chatId = TelegramChatContext.activeChatId ?: 0L
-                            
-                            // Fallback to BuildConfig token if context token is blank
-                            val botToken = if (TelegramChatContext.botToken.isNotBlank()) {
-                                TelegramChatContext.botToken
-                            } else {
-                                try {
-                                    BuildConfig.TELEGRAM_BOT_TOKEN
-                                } catch (e: Exception) {
-                                    ""
-                                }
-                            }
+                            val botToken = resolveBotToken()
 
                             if (chatId != 0L && botToken.isNotBlank()) {
                                 scheduleAlarmDirect(context, botToken, chatId, promptTask, triggerTime)
-
-                                // Direct dispatch to Telegram so it replies instantly
-                                try {
-                                    val replyText = "Successfully scheduled alarm for '$promptTask' in $timeSpec."
-                                    val url = java.net.URL("https://api.telegram.org/bot$botToken/sendMessage")
-                                    val conn = url.openConnection() as java.net.HttpURLConnection
-                                    conn.requestMethod = "POST"
-                                    conn.setRequestProperty("Content-Type", "application/json")
-                                    conn.doOutput = true
-                                    val escaped = replyText.replace("\"", "\\\"")
-                                    val payload = "{\"chat_id\": $chatId, \"text\": \"$escaped\"}"
-                                    conn.outputStream.write(payload.toByteArray())
-                                    conn.responseCode
-                                } catch (e: Exception) {
-                                    // Suppress network dispatch exceptions
-                                }
-
+                                sendDirectTelegramMessage(
+                                    botToken = botToken,
+                                    chatId = chatId,
+                                    text = "Successfully scheduled alarm for '$promptTask' in $timeSpec."
+                                )
                                 "Successfully scheduled alarm for '$promptTask' in $timeSpec."
                             } else {
                                 "Error: Active Telegram chat context or bot token missing for alarm scheduling."
@@ -163,7 +207,6 @@ class AgentToolRouter(
                     }
                 }
                 "add_cron_job" -> {
-                    // Periodic work registration placeholder
                     "Cron task registered successfully."
                 }
                 "get_screen_content" -> {
@@ -262,13 +305,164 @@ class AgentToolRouter(
             }
 
             "Tool: $toolName\nResult: $executionResult"
-
         } catch (e: Exception) {
             "Execution Error: ${e.localizedMessage}\n\nRaw Output:\n$rawOutput"
         }
     }
 
-    private fun scheduleAlarmDirect(context: Context, botToken: String, chatId: Long, prompt: String, triggerAtMillis: Long) {
+    private suspend fun runAgentToolsScript(
+        toolName: String,
+        argsJson: String,
+        timeoutSeconds: Long = 45L
+    ): String = withContext(Dispatchers.IO) {
+        val jobId = "job_${UUID.randomUUID().toString().take(8)}"
+        val escapedArgs = argsJson.replace("'", "'\\''")
+        val cmd = "/data/data/com.termux/files/usr/bin/python3 ~/agent_tools.py --job-id $jobId --tool $toolName --args-json '$escapedArgs'"
+        ShellSessionManager.executeCommand(
+            context = context,
+            chatId = TelegramChatContext.activeChatId ?: 0L,
+            command = cmd,
+            timeoutSeconds = timeoutSeconds
+        )
+    }
+
+    private fun buildAdbArgsJson(rawArg: String): String {
+        val trimmed = rawArg.trim()
+        if (trimmed.startsWith("{")) return trimmed
+        if (trimmed.isBlank()) {
+            return JSONObject()
+                .put("device", "chromecast_hd")
+                .put("action", "foreground_app")
+                .toString()
+        }
+        val parts = trimmed.split(Regex("\\s+"), limit = 3)
+        return JSONObject()
+            .put("device", parts[0])
+            .put("action", parts.getOrElse(1) { "shell" })
+            .put("arg", parts.getOrElse(2) { "" })
+            .toString()
+    }
+
+    private fun buildDeviceActionArgsJson(
+        argValue: String,
+        defaultDevice: String,
+        defaultAction: String,
+        actionKey: String
+    ): String {
+        val trimmed = argValue.trim()
+        if (trimmed.startsWith("{")) return trimmed
+        if (trimmed.isBlank()) {
+            return JSONObject()
+                .put("device", defaultDevice)
+                .put(actionKey, defaultAction)
+                .toString()
+        }
+        val parts = trimmed.split(Regex("\\s+"), limit = 3)
+        return JSONObject()
+            .put("device", parts[0])
+            .put(actionKey, parts.getOrElse(1) { defaultAction })
+            .put("arg", parts.getOrElse(2) { "" })
+            .toString()
+    }
+
+    private fun buildSshArgsJson(rawArg: String): String {
+        val trimmed = rawArg.trim()
+        if (trimmed.startsWith("{")) return trimmed
+        val parts = trimmed.split(Regex("\\s+"), limit = 2)
+        return JSONObject()
+            .put("host", parts.firstOrNull().orEmpty())
+            .put("command", parts.getOrElse(1) { "uptime" })
+            .toString()
+    }
+
+    private fun looksLikeAdbPairingError(output: String): Boolean {
+        val lower = output.lowercase()
+        return lower.contains("connection refused") ||
+            lower.contains("not found") ||
+            lower.contains("unauthorized") ||
+            lower.contains("device offline") ||
+            lower.contains("protocol fault") ||
+            lower.contains("failed to connect")
+    }
+
+    private suspend fun handleAdbPairingFallback(originalArgsJson: String, firstOutput: String): String =
+        withContext(Dispatchers.IO) {
+            val chatId = TelegramChatContext.activeChatId
+            val botToken = resolveBotToken()
+            if (chatId == null || botToken.isBlank()) {
+                return@withContext "$firstOutput\n(Pairing needed, but no active Telegram chat/token is available.)"
+            }
+
+            val deviceName = runCatching {
+                JSONObject(originalArgsJson).optString("device", "chromecast_hd")
+            }.getOrDefault("chromecast_hd")
+
+            sendDirectTelegramMessage(
+                botToken = botToken,
+                chatId = chatId,
+                text = "ADB connection/pairing needed for `$deviceName`.\n" +
+                    "What is the **pairing port** and **6-digit pairing code**?\n" +
+                    "Reply with: `<pairing_port> <code>` (or `<pairing_port> <code> <connect_port>`), or `cancel`."
+            )
+
+            val reply = PairingPromptManager.awaitWithTimeout(chatId.toString(), timeoutSec = 90L)
+            if (reply.isNullOrBlank() || reply.equals("cancel", ignoreCase = true)) {
+                return@withContext "$firstOutput\nPairing cancelled or timed out."
+            }
+
+            val pairArgsJson = JSONObject()
+                .put("device", deviceName)
+                .put("action", "pair")
+                .put("arg", reply)
+                .toString()
+
+            val pairResult = runAgentToolsScript("adb", pairArgsJson, timeoutSeconds = 30L)
+            if (pairResult.contains("\"ok\": false") || pairResult.contains("error", ignoreCase = true)) {
+                return@withContext "Pairing attempt output:\n$pairResult"
+            }
+
+            val retryResult = runAgentToolsScript("adb", originalArgsJson, timeoutSeconds = 90L)
+            "Paired via Telegram input (`$reply`). Retry result:\n$retryResult"
+        }
+
+    private fun resolveBotToken(): String {
+        return if (TelegramChatContext.botToken.isNotBlank()) {
+            TelegramChatContext.botToken
+        } else {
+            try {
+                BuildConfig.TELEGRAM_BOT_TOKEN
+            } catch (_: Exception) {
+                ""
+            }
+        }
+    }
+
+    private fun sendDirectTelegramMessage(botToken: String, chatId: Long, text: String) {
+        try {
+            val url = java.net.URL("https://api.telegram.org/bot$botToken/sendMessage")
+            val conn = url.openConnection() as java.net.HttpURLConnection
+            conn.requestMethod = "POST"
+            conn.setRequestProperty("Content-Type", "application/json")
+            conn.doOutput = true
+            val escaped = text
+                .replace("\\", "\\\\")
+                .replace("\"", "\\\"")
+                .replace("\n", "\\n")
+            val payload = "{\"chat_id\": $chatId, \"text\": \"$escaped\", \"parse_mode\": \"Markdown\"}"
+            conn.outputStream.use { it.write(payload.toByteArray(Charsets.UTF_8)) }
+            conn.responseCode
+            conn.disconnect()
+        } catch (_: Exception) {
+        }
+    }
+
+    private fun scheduleAlarmDirect(
+        context: Context,
+        botToken: String,
+        chatId: Long,
+        prompt: String,
+        triggerAtMillis: Long
+    ) {
         val alarmManager = context.getSystemService(Context.ALARM_SERVICE) as AlarmManager
         val intent = Intent(context, AlarmReceiver::class.java).apply {
             putExtra("chat_id", chatId)
@@ -293,7 +487,7 @@ class AgentToolRouter(
                     pendingIntent
                 )
             }
-        } catch (e: SecurityException) {
+        } catch (_: SecurityException) {
             alarmManager.set(AlarmManager.RTC_WAKEUP, triggerAtMillis, pendingIntent)
         }
     }
@@ -304,29 +498,21 @@ class AgentToolRouter(
         return when {
             clean.contains("s") -> number * 1000
             clean.contains("h") -> number * 60 * 60 * 1000
-            else -> number * 60 * 1000 // default to minutes
+            else -> number * 60 * 1000
         }
     }
 
     private fun isSensitiveTool(toolName: String): Boolean {
-        val sensitiveTools = listOf("open_app", "click_text", "type_text", "open_browser", "tap_xy", "write_patch")
+        val sensitiveTools = listOf(
+            "open_app", "click_text", "type_text", "open_browser", "tap_xy", "write_patch", "ssh"
+        )
         return sensitiveTools.contains(toolName)
     }
 
     private suspend fun requestUserApproval(toolName: String, args: String): Boolean = withContext(Dispatchers.IO) {
         val chatId = TelegramChatContext.activeChatId
-        
-        val botToken = if (TelegramChatContext.botToken.isNotBlank()) {
-            TelegramChatContext.botToken
-        } else {
-            try {
-                BuildConfig.TELEGRAM_BOT_TOKEN
-            } catch (e: Exception) {
-                ""
-            }
-        }
+        val botToken = resolveBotToken()
 
-        // If no Telegram chat session or token is available, default to auto-approve for local app tests
         if (chatId == null || botToken.isBlank()) {
             return@withContext true
         }
@@ -339,7 +525,7 @@ class AgentToolRouter(
         val payload = """
             {
                 "chat_id": $chatId,
-                "text": "$messageText",
+                "text": "${messageText.replace("\"", "\\\"").replace("\n", "\\n")}",
                 "parse_mode": "Markdown",
                 "reply_markup": {
                     "inline_keyboard": [[
@@ -356,12 +542,12 @@ class AgentToolRouter(
             conn.requestMethod = "POST"
             conn.setRequestProperty("Content-Type", "application/json")
             conn.doOutput = true
-            conn.outputStream.write(payload.toByteArray())
+            conn.outputStream.use { it.write(payload.toByteArray(Charsets.UTF_8)) }
             conn.responseCode
+            conn.disconnect()
 
-            // Block coroutine thread until inline button is tapped in Telegram
             return@withContext future.get()
-        } catch (e: Exception) {
+        } catch (_: Exception) {
             return@withContext false
         }
     }

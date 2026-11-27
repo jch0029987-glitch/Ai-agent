@@ -9,6 +9,9 @@ import android.os.Build
 import android.os.IBinder
 import android.util.Log
 import androidx.core.app.NotificationCompat
+import com.jeremy.ai.backend.ChatSessionManager
+import com.jeremy.ai.backend.PairingPromptManager
+import com.jeremy.ai.backend.TelegramApprovalStore
 import io.ktor.client.*
 import io.ktor.client.engine.android.*
 import io.ktor.client.network.sockets.ConnectTimeoutException
@@ -192,7 +195,8 @@ class TelegramBridgeService : Service() {
                         val message = update.getJSONObject("message")
                         val fromUser = message.optJSONObject("from")
                         val senderId = fromUser?.optLong("id")?.toString() ?: ""
-                        val chatId = message.getJSONObject("chat").getLong("id").toString()
+                        val chatIdLong = message.getJSONObject("chat").getLong("id")
+                        val chatId = chatIdLong.toString()
                         val text = message.optString("text", "")
 
                         Log.i(TAG, "Received message: '$text' from sender: $senderId")
@@ -203,7 +207,7 @@ class TelegramBridgeService : Service() {
                         }
 
                         if (text.isNotBlank()) {
-                            processRemoteCommand(chatId, text, botToken, message.getLong("message_id"))
+                            routeTextMessage(chatIdLong, text, botToken, message.getLong("message_id"))
                         }
                     }
                 }
@@ -222,6 +226,44 @@ class TelegramBridgeService : Service() {
                 }
             }
         }
+    }
+
+    private fun routeTextMessage(chatIdLong: Long, rawText: String, botToken: String, messageId: Long) {
+        val chatId = chatIdLong.toString()
+        val trimmed = rawText.trim()
+        ChatSessionManager.lastActiveTelegramChatId = chatIdLong
+
+        if (PairingPromptManager.submitPairing(chatId, trimmed)) {
+            sendTelegramResponse(chatId, "Pairing code/port received. Running `adb pair` and retrying...")
+            return
+        }
+
+        if (trimmed.equals("/reset", ignoreCase = true)) {
+            ChatSessionManager.clearSession("telegram-$chatId")
+            sendTelegramResponse(chatId, "Session history cleared.")
+            return
+        }
+
+        if (trimmed.startsWith("/approve", ignoreCase = true) || trimmed.startsWith("/deny", ignoreCase = true)) {
+            val isApprove = trimmed.startsWith("/approve", ignoreCase = true)
+            val jobId = trimmed.removePrefix(if (isApprove) "/approve" else "/deny").trim()
+            val completed = if (jobId.isNotEmpty()) {
+                TelegramApprovalStore.pendingApprovals.remove(jobId)?.complete(isApprove) != null
+            } else {
+                false
+            }
+            sendTelegramResponse(
+                chatId,
+                if (completed) {
+                    if (isApprove) "Approved job `$jobId`." else "Denied job `$jobId`."
+                } else {
+                    "No pending approval found for job `$jobId`."
+                }
+            )
+            return
+        }
+
+        processRemoteCommand(chatId, rawText, botToken, messageId)
     }
 
     private fun processRemoteCommand(chatId: String, prompt: String, botToken: String, messageId: Long) {
