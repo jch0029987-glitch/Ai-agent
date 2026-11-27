@@ -362,8 +362,17 @@ class AgentManager(private val context: Context) {
                     - Output format:
                       TOOL: tool_name
                       ARG: argument_value
-                    - Available Tools: network_scan, service_ping, adb, roku, kodi, ssh, execute_shell, patch_file, search_code, read_file, write_patch, open_browser, github_get_issues, get_screen_content, get_recent_notifications, open_app, get_installed_apps, click_text, type_text, tap_xy, scroll_down, scroll_up, go_home, go_back, schedule_alarm, add_cron_job, finish
-                    - Use TOOL: finish with ARG: summary when done. Do not repeat identical tool calls.
+                    - Remote network/TV/ADB tools (runs ~/agent_tools.py in Termux):
+                      * adb -> ARG JSON: {"device":"chromecast_hd","action":"foreground_app"} (actions: foreground_app, shell, install_apk, pair, connect)
+                      * network_scan -> ARG JSON: {"subnet_prefix":"192.168.1"} (or {})
+                      * service_ping -> ARG JSON: {}
+                      * roku -> ARG JSON: {"device":"roku","action":"active_app"}
+                      * kodi -> ARG JSON: {"device":"kodi","method":"Player.GetActivePlayers"}
+                      * ssh -> ARG JSON: {"host":"...","command":"..."}
+                    - Local Pixel screen/shell/file tools:
+                      * get_screen_content (no ARG needed; reads local phone screen only, not TV/ADB)
+                      * execute_shell, patch_file, search_code, read_file, write_patch, open_browser, github_get_issues, get_recent_notifications, open_app, get_installed_apps, click_text, type_text, tap_xy, scroll_down, scroll_up, go_home, go_back, schedule_alarm, add_cron_job, finish
+                    - Use TOOL: finish with ARG: summary when done. Never repeat a tool that returned an error.
                 """.trimIndent()
 
                 val rawModelOutput = generateModelTurn(
@@ -443,10 +452,16 @@ class AgentManager(private val context: Context) {
                     result
                 }
 
+                executionHistory.append("Step $step -> $toolName($argValue): $toolResult\n")
+
+                if (toolResult.contains("Error:", ignoreCase = true) && toolName == lastToolName) {
+                    val failMsg = "Aborted after repeated error on $toolName.\n\nHistory:\n$executionHistory"
+                    onToken(failMsg)
+                    return@withContext failMsg
+                }
+
                 lastToolName = toolName
                 lastArgValue = argValue
-
-                executionHistory.append("Step $step -> $toolName($argValue): $toolResult\n")
 
                 if (step == maxSteps) {
                     return@withContext "Reached maximum iteration limit ($maxSteps steps).\n\nHistory:\n$executionHistory"
