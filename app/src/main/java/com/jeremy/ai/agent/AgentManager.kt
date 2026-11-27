@@ -231,7 +231,7 @@ class AgentManager(private val context: Context) {
             }
         }
 
-    private fun runSingleLineShell(command: String): String {
+    private suspend fun runSingleLineShell(command: String): String {
         val sanitized = command.replace("\r", " ").replace("\n", " ").trim().removePrefix("\\").trim()
         return toolRouter.executeToolCall("TOOL: execute_shell\nARG: $sanitized")
     }
