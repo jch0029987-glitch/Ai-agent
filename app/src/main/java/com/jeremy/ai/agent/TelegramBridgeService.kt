@@ -22,12 +22,14 @@ import io.ktor.http.*
 import kotlinx.coroutines.*
 import org.json.JSONObject
 import java.net.SocketTimeoutException
+import java.util.concurrent.ConcurrentHashMap
 
 class TelegramBridgeService : Service() {
 
     private val serviceScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
     private var pollingJob: Job? = null
     private var lastUpdateId = 0L
+    private val activeCommandJobs = ConcurrentHashMap<String, Job>()
 
     private val client = HttpClient(Android) {
         expectSuccess = false
@@ -202,7 +204,7 @@ class TelegramBridgeService : Service() {
                         Log.i(TAG, "Received message: '$text' from sender: $senderId")
 
                         if (allowedUserId.isNotBlank() && senderId != allowedUserId) {
-                            sendTelegramResponse(chatId, "Unauthorized user ID: $senderId")
+                            sendTelegramResponse(chatId, "Unauthorized user ID: $senderId", botToken)
                             continue
                         }
 
@@ -234,64 +236,84 @@ class TelegramBridgeService : Service() {
         ChatSessionManager.lastActiveTelegramChatId = chatIdLong
 
         if (PairingPromptManager.submitPairing(chatId, trimmed)) {
-            sendTelegramResponse(chatId, "Pairing code/port received. Running `adb pair` and retrying...")
+            serviceScope.launch {
+                sendTelegramResponse(chatId, "Pairing code/port received. Running `adb pair` and retrying...", botToken)
+            }
+            return
+        }
+
+        if (trimmed.equals("/cancel", ignoreCase = true)) {
+            val running = activeCommandJobs.remove(chatId)
+            serviceScope.launch {
+                if (running != null && running.isActive) {
+                    running.cancel()
+                    sendTelegramResponse(chatId, "Cancelled active task.", botToken)
+                } else {
+                    sendTelegramResponse(chatId, "No active task to cancel.", botToken)
+                }
+            }
             return
         }
 
         if (trimmed.equals("/reset", ignoreCase = true)) {
             ChatSessionManager.clearSession("telegram-$chatId")
-            sendTelegramResponse(chatId, "Session history cleared.")
+            serviceScope.launch {
+                sendTelegramResponse(chatId, "Session history cleared.", botToken)
+            }
             return
         }
 
         if (trimmed.startsWith("/remember", ignoreCase = true)) {
             val note = trimmed.removePrefix("/remember").trim()
             val manager = AgentBridge.agentManager
-            if (manager == null) {
-                sendTelegramResponse(chatId, "Error: AgentManager not initialized.")
-                return
-            }
-            if (note.isEmpty()) {
-                sendTelegramResponse(chatId, "Usage: `/remember <fact or note>`")
-                return
-            }
             serviceScope.launch {
+                if (manager == null) {
+                    sendTelegramResponse(chatId, "Error: AgentManager not initialized.", botToken)
+                    return@launch
+                }
+                if (note.isEmpty()) {
+                    sendTelegramResponse(chatId, "Usage: `/remember <fact or note>`", botToken)
+                    return@launch
+                }
                 val reply = manager.rememberNote(note)
-                sendTelegramResponse(chatId, reply)
+                sendTelegramResponse(chatId, reply, botToken)
             }
             return
         }
 
         if (trimmed.equals("/memory", ignoreCase = true)) {
             val manager = AgentBridge.agentManager
-            if (manager == null) {
-                sendTelegramResponse(chatId, "Error: AgentManager not initialized.")
-                return
-            }
             serviceScope.launch {
+                if (manager == null) {
+                    sendTelegramResponse(chatId, "Error: AgentManager not initialized.", botToken)
+                    return@launch
+                }
                 val memoryDump = manager.readMemoryFiles()
-                sendTelegramResponse(chatId, memoryDump)
+                sendTelegramResponse(chatId, memoryDump, botToken)
             }
             return
         }
 
         if (trimmed.equals("/backend", ignoreCase = true) || trimmed.equals("/model", ignoreCase = true)) {
             val status = AgentBridge.agentManager?.getBackendStatus() ?: "Error: AgentManager not initialized."
-            sendTelegramResponse(
-                chatId,
-                "$status\n\nUse `/backend ollama` or `/backend litert`, or `/model qwen2.5-coder:3b`."
-            )
+            serviceScope.launch {
+                sendTelegramResponse(
+                    chatId,
+                    "$status\n\nUse `/backend ollama` or `/backend litert`, or `/model qwen2.5-coder:3b`.",
+                    botToken
+                )
+            }
             return
         }
 
         if (trimmed.startsWith("/backend ", ignoreCase = true)) {
             val arg = trimmed.removePrefix("/backend").trim().lowercase()
             val manager = AgentBridge.agentManager
-            if (manager == null) {
-                sendTelegramResponse(chatId, "Error: AgentManager not initialized.")
-                return
-            }
             serviceScope.launch {
+                if (manager == null) {
+                    sendTelegramResponse(chatId, "Error: AgentManager not initialized.", botToken)
+                    return@launch
+                }
                 val statusMsg = when {
                     arg.startsWith("ollama") -> {
                         val parts = arg.split(Regex("\\s+"), limit = 2)
@@ -302,7 +324,7 @@ class TelegramBridgeService : Service() {
                     }
                     else -> "Unknown backend `$arg`. Use `ollama` or `litert`."
                 }
-                sendTelegramResponse(chatId, statusMsg)
+                sendTelegramResponse(chatId, statusMsg, botToken)
             }
             return
         }
@@ -310,17 +332,17 @@ class TelegramBridgeService : Service() {
         if (trimmed.startsWith("/model ", ignoreCase = true)) {
             val modelName = trimmed.removePrefix("/model").trim()
             val manager = AgentBridge.agentManager
-            if (manager == null) {
-                sendTelegramResponse(chatId, "Error: AgentManager not initialized.")
-                return
-            }
             serviceScope.launch {
+                if (manager == null) {
+                    sendTelegramResponse(chatId, "Error: AgentManager not initialized.", botToken)
+                    return@launch
+                }
                 val statusMsg = if (modelName.endsWith(".litertlm", ignoreCase = true)) {
                     manager.switchToLiteRtLm(modelName)
                 } else {
                     manager.switchToOllama(modelName = modelName)
                 }
-                sendTelegramResponse(chatId, statusMsg)
+                sendTelegramResponse(chatId, statusMsg, botToken)
             }
             return
         }
@@ -333,14 +355,17 @@ class TelegramBridgeService : Service() {
             } else {
                 false
             }
-            sendTelegramResponse(
-                chatId,
-                if (completed) {
-                    if (isApprove) "Approved job `$jobId`." else "Denied job `$jobId`."
-                } else {
-                    "No pending approval found for job `$jobId`."
-                }
-            )
+            serviceScope.launch {
+                sendTelegramResponse(
+                    chatId,
+                    if (completed) {
+                        if (isApprove) "Approved job `$jobId`." else "Denied job `$jobId`."
+                    } else {
+                        "No pending approval found for job `$jobId`."
+                    },
+                    botToken
+                )
+            }
             return
         }
 
@@ -348,9 +373,10 @@ class TelegramBridgeService : Service() {
     }
 
     private fun processRemoteCommand(chatId: String, prompt: String, botToken: String, messageId: Long) {
-        serviceScope.launch {
-            sendChatAction(chatId, "typing")
-            sendTelegramResponse(chatId, "Processing request...")
+        activeCommandJobs[chatId]?.cancel()
+        val job = serviceScope.launch {
+            sendChatAction(chatId, "typing", botToken)
+            sendTelegramResponse(chatId, "Processing request...", botToken)
 
             try {
                 val finalOutput = AgentBridge.processPromptWithTelegramUpdates(
@@ -360,82 +386,84 @@ class TelegramBridgeService : Service() {
                     messageId = messageId
                 )
 
-                val responseText = if (!finalOutput.isNullOrBlank()) finalOutput else "Task completed."
-                sendTelegramResponse(chatId, responseText)
+                val responseText = if (finalOutput.isBlank()) "Task completed." else finalOutput
+                sendTelegramResponse(chatId, responseText, botToken)
             } catch (e: CancellationException) {
+                sendTelegramResponse(chatId, "Task cancelled.", botToken)
                 throw e
             } catch (e: Exception) {
                 Log.e(TAG, "Agent execution error", e)
-                sendTelegramResponse(chatId, "Agent Error: ${e.localizedMessage ?: e.javaClass.simpleName}")
+                sendTelegramResponse(chatId, "Agent Error: ${e.localizedMessage ?: e.javaClass.simpleName}", botToken)
+            } finally {
+                activeCommandJobs.remove(chatId)
             }
+        }
+        activeCommandJobs[chatId] = job
+    }
+
+    private suspend fun sendChatAction(chatId: String, action: String, botToken: String = BuildConfig.TELEGRAM_BOT_TOKEN) {
+        try {
+            val payload = JSONObject().apply {
+                put("chat_id", chatId)
+                put("action", action)
+            }.toString()
+
+            val resp = postTelegramWithRetry(
+                url = "https://api.telegram.org/bot$botToken/sendChatAction",
+                jsonPayload = payload,
+                maxAttempts = 2,
+                baseDelayMs = 400L
+            )
+            if (!resp.status.isSuccess()) {
+                Log.w(TAG, "sendChatAction failed (${resp.status.value}): ${resp.bodyAsText()}")
+            }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to send chat action", e)
         }
     }
 
-    private fun sendChatAction(chatId: String, action: String) {
-        serviceScope.launch {
-            try {
-                val botToken = BuildConfig.TELEGRAM_BOT_TOKEN
-                val payload = JSONObject().apply {
+    private suspend fun sendTelegramResponse(chatId: String, text: String, botToken: String = BuildConfig.TELEGRAM_BOT_TOKEN) {
+        try {
+            val chunks = text.chunked(MAX_TELEGRAM_CHARS)
+            for (chunk in chunks) {
+                val mdPayload = JSONObject().apply {
                     put("chat_id", chatId)
-                    put("action", action)
+                    put("text", chunk)
+                    put("parse_mode", "Markdown")
                 }.toString()
 
                 val resp = postTelegramWithRetry(
-                    url = "https://api.telegram.org/bot$botToken/sendChatAction",
-                    jsonPayload = payload,
-                    maxAttempts = 2,
-                    baseDelayMs = 400L
+                    url = "https://api.telegram.org/bot$botToken/sendMessage",
+                    jsonPayload = mdPayload
                 )
-                if (!resp.status.isSuccess()) {
-                    Log.w(TAG, "sendChatAction failed (${resp.status.value}): ${resp.bodyAsText()}")
-                }
-            } catch (e: Exception) {
-                Log.e(TAG, "Failed to send chat action", e)
-            }
-        }
-    }
 
-    private fun sendTelegramResponse(chatId: String, text: String) {
-        serviceScope.launch {
-            try {
-                val botToken = BuildConfig.TELEGRAM_BOT_TOKEN
-                val chunks = text.chunked(MAX_TELEGRAM_CHARS)
-                for (chunk in chunks) {
-                    val mdPayload = JSONObject().apply {
+                if (resp.status.isSuccess()) {
+                    continue
+                }
+
+                val errBody = resp.bodyAsText()
+                if (resp.status == HttpStatusCode.BadRequest && errBody.contains("parse entities", ignoreCase = true)) {
+                    val plainPayload = JSONObject().apply {
                         put("chat_id", chatId)
                         put("text", chunk)
-                        put("parse_mode", "Markdown")
                     }.toString()
-
-                    val resp = postTelegramWithRetry(
+                    val retryResp = postTelegramWithRetry(
                         url = "https://api.telegram.org/bot$botToken/sendMessage",
-                        jsonPayload = mdPayload
+                        jsonPayload = plainPayload
                     )
-
-                    if (resp.status.isSuccess()) {
-                        continue
+                    if (!retryResp.status.isSuccess()) {
+                        Log.e(TAG, "sendMessage plain retry failed (${retryResp.status.value}): ${retryResp.bodyAsText()}")
                     }
-
-                    val errBody = resp.bodyAsText()
-                    if (resp.status == HttpStatusCode.BadRequest && errBody.contains("parse entities", ignoreCase = true)) {
-                        val plainPayload = JSONObject().apply {
-                            put("chat_id", chatId)
-                            put("text", chunk)
-                        }.toString()
-                        val retryResp = postTelegramWithRetry(
-                            url = "https://api.telegram.org/bot$botToken/sendMessage",
-                            jsonPayload = plainPayload
-                        )
-                        if (!retryResp.status.isSuccess()) {
-                            Log.e(TAG, "sendMessage plain retry failed (${retryResp.status.value}): ${retryResp.bodyAsText()}")
-                        }
-                    } else {
-                        Log.e(TAG, "sendMessage failed (${resp.status.value}): $errBody")
-                    }
+                } else {
+                    Log.e(TAG, "sendMessage failed (${resp.status.value}): $errBody")
                 }
-            } catch (e: Exception) {
-                Log.e(TAG, "Failed to send reply", e)
             }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to send reply", e)
         }
     }
 
@@ -443,6 +471,8 @@ class TelegramBridgeService : Service() {
 
     override fun onDestroy() {
         pollingJob?.cancel()
+        activeCommandJobs.values.forEach { it.cancel() }
+        activeCommandJobs.clear()
         serviceScope.cancel()
         client.close()
         super.onDestroy()

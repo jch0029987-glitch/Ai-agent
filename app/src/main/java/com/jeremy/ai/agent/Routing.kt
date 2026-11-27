@@ -140,7 +140,7 @@ object ShellSessionManager {
             targetContext.startForegroundService(intent)
 
             return try {
-                future.get(timeoutSeconds, TimeUnit.SECONDS) ?: "Command executed with no output."
+                future.get(timeoutSeconds, TimeUnit.SECONDS) ?: ""
             } catch (_: java.util.concurrent.TimeoutException) {
                 Log.w(TAG, "Timed out waiting for Termux callback on executionId=$executionId")
                 "Error: Termux execution timed out waiting for callback."
@@ -162,22 +162,56 @@ object ShellSessionManager {
             return
         }
 
-        val allExtras = mutableMapOf<String, Any?>()
-        bundle?.keySet()?.forEach { key -> allExtras[key] = bundle.get(key) }
-        intent.extras?.keySet()?.forEach { key -> allExtras["intent_$key"] = intent.extras?.get(key) }
+        val resultBundle: Bundle? = when {
+            bundle?.getBundle("result") != null -> bundle.getBundle("result")
+            bundle?.getBundle("com.termux.plugin.result.bundle") != null -> bundle.getBundle("com.termux.plugin.result.bundle")
+            intent.getBundleExtra("result") != null -> intent.getBundleExtra("result")
+            intent.getBundleExtra("com.termux.plugin.result.bundle") != null -> intent.getBundleExtra("com.termux.plugin.result.bundle")
+            else -> bundle ?: intent.extras
+        }
 
-        val stdout = bundle?.getString("stdout")
-            ?: bundle?.getString("com.termux.RUN_COMMAND_STDOUT")
-            ?: bundle?.getString("com.termux.plugin.result.bundle.stdout")
-            ?: intent.getStringExtra("stdout")
-            ?: intent.getStringExtra("com.termux.RUN_COMMAND_STDOUT")
-            ?: allExtras.entries.firstOrNull {
-                it.key.contains("stdout", true) || it.key.contains("output", true)
-            }?.value?.toString()
-            ?: allExtras.entries.firstOrNull { it.value is String && (it.value as String).length > 5 }?.value?.toString()
-            ?: "Command completed successfully."
+        val stdout = (
+            resultBundle?.getString("stdout")
+                ?: resultBundle?.getString("com.termux.RUN_COMMAND_STDOUT")
+                ?: bundle?.getString("stdout")
+                ?: bundle?.getString("com.termux.RUN_COMMAND_STDOUT")
+                ?: intent.getStringExtra("stdout")
+                ?: intent.getStringExtra("com.termux.RUN_COMMAND_STDOUT")
+                ?: ""
+            ).trimEnd()
 
-        future.complete(stdout.take(4000))
+        val stderr = (
+            resultBundle?.getString("stderr")
+                ?: resultBundle?.getString("com.termux.RUN_COMMAND_STDERR")
+                ?: bundle?.getString("stderr")
+                ?: bundle?.getString("com.termux.RUN_COMMAND_STDERR")
+                ?: intent.getStringExtra("stderr")
+                ?: intent.getStringExtra("com.termux.RUN_COMMAND_STDERR")
+                ?: ""
+            ).trim()
+
+        val exitCode = resultBundle?.getInt("exitCode", Int.MIN_VALUE)
+            ?: intent.getIntExtra("exitCode", Int.MIN_VALUE)
+
+        Log.d(
+            TAG,
+            "executionId=$executionId exitCode=$exitCode stdoutLen=${stdout.length} stderrLen=${stderr.length} resultKeys=${resultBundle?.keySet()}"
+        )
+
+        val combined = buildString {
+            if (stdout.isNotEmpty()) {
+                append(stdout)
+            }
+            if (stderr.isNotEmpty()) {
+                if (isNotEmpty()) append("\n")
+                append(if (exitCode != Int.MIN_VALUE && exitCode != 0) "Error (exit $exitCode): $stderr" else stderr)
+            }
+            if (isEmpty() && exitCode != Int.MIN_VALUE && exitCode != 0) {
+                append("Error: Command exited with code $exitCode")
+            }
+        }
+
+        future.complete(combined.take(4000))
     }
 }
 
@@ -705,14 +739,39 @@ fun Application.configureRouting() {
                 if (chatId != null && !text.isNullOrBlank()) {
                     ChatSessionManager.lastActiveTelegramChatId = chatId
                     val clientId = "telegram-$chatId"
-                    if (text.trim().equals("/reset", ignoreCase = true)) {
+                    val trimmed = text.trim()
+
+                    if (trimmed.equals("/reset", ignoreCase = true)) {
                         ChatSessionManager.clearSession(clientId)
                         call.respond(HttpStatusCode.OK, mapOf("response" to "🔄 Session history cleared."))
                         return@post
                     }
 
-                    if (text.startsWith("/shell ")) {
-                        val cmd = text.removePrefix("/shell").trim()
+                    if (trimmed.startsWith("/remember", ignoreCase = true)) {
+                        val note = trimmed.removePrefix("/remember").trim()
+                        val manager = AgentBridge.agentManager
+                        val reply = when {
+                            manager == null -> "Error: AgentManager not initialized."
+                            note.isEmpty() -> "Usage: `/remember <fact or note>`"
+                            else -> withContext(Dispatchers.IO) { manager.rememberNote(note) }
+                        }
+                        call.respond(HttpStatusCode.OK, mapOf("response" to reply))
+                        return@post
+                    }
+
+                    if (trimmed.equals("/memory", ignoreCase = true)) {
+                        val manager = AgentBridge.agentManager
+                        val memoryDump = if (manager != null) {
+                            withContext(Dispatchers.IO) { manager.readMemoryFiles() }
+                        } else {
+                            "Error: AgentManager not initialized."
+                        }
+                        call.respond(HttpStatusCode.OK, mapOf("response" to memoryDump))
+                        return@post
+                    }
+
+                    if (trimmed.startsWith("/shell ")) {
+                        val cmd = trimmed.removePrefix("/shell").trim()
                         val ctx = ShellSessionManager.safeAppContext()
                         val result = if (ctx != null) {
                             withContext(Dispatchers.IO) { ShellSessionManager.executeCommand(ctx, chatId, cmd) }
