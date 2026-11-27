@@ -244,6 +244,50 @@ class TelegramBridgeService : Service() {
             return
         }
 
+        if (trimmed.equals("/backend", ignoreCase = true) || trimmed.equals("/model", ignoreCase = true)) {
+            sendTelegramResponse(
+                chatId,
+                "${AiBackendSwitcher.statusSummary()}\n\n" +
+                    "Use `/backend ollama` or `/backend litert`, or `/model qwen2.5-coder:3b`."
+            )
+            return
+        }
+
+        if (trimmed.startsWith("/backend ", ignoreCase = true)) {
+            val arg = trimmed.removePrefix("/backend").trim().lowercase()
+            val statusMsg = when {
+                arg.startsWith("ollama") -> {
+                    val parts = arg.split(Regex("\\s+"), limit = 2)
+                    AiBackendSwitcher.switchToOllama(modelName = parts.getOrNull(1))
+                }
+                arg.startsWith("litert") || arg.startsWith("gemma") -> {
+                    AiBackendSwitcher.switchToLiteRtLm(AgentBridge.agentManager)
+                }
+                else -> "Unknown backend `$arg`. Use `ollama` or `litert`."
+            }
+            sendTelegramResponse(chatId, statusMsg)
+            return
+        }
+
+        if (trimmed.startsWith("/model ", ignoreCase = true)) {
+            val modelName = trimmed.removePrefix("/model").trim()
+            if (modelName.endsWith(".litertlm", ignoreCase = true)) {
+                AiBackendSwitcher.switchToLiteRtLm(AgentBridge.agentManager, modelName)
+                serviceScope.launch {
+                    val initResult = AgentBridge.agentManager?.setupEngineFromStorage(modelName)
+                    val msg = if (initResult?.isSuccess == true) {
+                        "Loaded `$modelName` on **LITERT_LM**."
+                    } else {
+                        "Switched to **LITERT_LM**, but failed to load `$modelName`: ${initResult?.exceptionOrNull()?.localizedMessage}"
+                    }
+                    sendTelegramResponse(chatId, msg)
+                }
+            } else {
+                sendTelegramResponse(chatId, AiBackendSwitcher.switchToOllama(modelName = modelName))
+            }
+            return
+        }
+
         if (trimmed.startsWith("/approve", ignoreCase = true) || trimmed.startsWith("/deny", ignoreCase = true)) {
             val isApprove = trimmed.startsWith("/approve", ignoreCase = true)
             val jobId = trimmed.removePrefix(if (isApprove) "/approve" else "/deny").trim()

@@ -45,6 +45,7 @@ object AgentBridge {
 class AgentManager(private val context: Context) {
     private var engine: Engine? = null
     private var isInitialized = false
+    private var loadedModelName: String? = null
 
     private val inferenceMutex = Mutex()
 
@@ -71,6 +72,68 @@ class AgentManager(private val context: Context) {
     private fun showToast(message: String) {
         Handler(Looper.getMainLooper()).post {
             Toast.makeText(context, message, Toast.LENGTH_LONG).show()
+        }
+    }
+
+    fun getBackendStatus(): String {
+        val settings = AiBackendConfig.currentSettings
+        val activeModel = settings.ollamaCoderModel.ifBlank { "qwen2.5-coder:3b" }
+        val liteRtState = if (isInitialized && engine != null) {
+            "ready (${loadedModelName ?: "gemma-4-E2B-it.litertlm"})"
+        } else {
+            "unloaded"
+        }
+        return "Mode: **${settings.mode}**\n" +
+            "LiteRT-LM: `$liteRtState`\n" +
+            "Ollama: `$activeModel` @ `${settings.ollamaBaseUrl}`"
+    }
+
+    suspend fun switchToOllama(
+        modelName: String? = null,
+        baseUrl: String? = null,
+        unloadLiteRt: Boolean = true
+    ): String = withContext(Dispatchers.IO) {
+        inferenceMutex.withLock {
+            val prev = AiBackendConfig.currentSettings
+            val nextModel = modelName?.trim()?.takeIf { it.isNotEmpty() }
+                ?: prev.ollamaCoderModel.ifBlank { "qwen2.5-coder:3b" }
+            val nextUrl = baseUrl?.trim()?.removeSuffix("/")?.takeIf { it.isNotEmpty() }
+                ?: prev.ollamaBaseUrl
+
+            AiBackendConfig.currentSettings = prev.copy(
+                mode = AiBackendMode.OLLAMA,
+                ollamaBaseUrl = nextUrl,
+                ollamaCoderModel = nextModel
+            )
+
+            if (unloadLiteRt && isInitialized) {
+                shutdownEngineInternal()
+            }
+
+            "Switched to **OLLAMA** (`$nextModel` @ `$nextUrl`)."
+        }
+    }
+
+    suspend fun switchToLiteRtLm(modelFileName: String? = null): String {
+        val targetModel = modelFileName?.trim()?.takeIf { it.isNotEmpty() }
+            ?: loadedModelName
+            ?: "gemma-4-E2B-it.litertlm"
+
+        val prev = AiBackendConfig.currentSettings
+        AiBackendConfig.currentSettings = prev.copy(mode = AiBackendMode.LITERT_LM)
+
+        val needsInit = !isInitialized || engine == null ||
+            (modelFileName != null && loadedModelName != targetModel)
+
+        if (!needsInit) {
+            return "Switched to **LITERT_LM** (`$targetModel`)."
+        }
+
+        val initResult = setupEngineFromStorage(targetModel)
+        return if (initResult.isSuccess) {
+            "Switched to **LITERT_LM** and loaded `$targetModel`."
+        } else {
+            "Switched to **LITERT_LM**, but failed to load `$targetModel`: ${initResult.exceptionOrNull()?.localizedMessage}"
         }
     }
 
@@ -102,6 +165,7 @@ class AgentManager(private val context: Context) {
                         Log.e(TAG, errorMsg)
                         showToast("Model file not found at $fileName")
                         isInitialized = false
+                        loadedModelName = null
                         return@withContext Result.failure(IllegalArgumentException(errorMsg))
                     }
 
@@ -110,6 +174,7 @@ class AgentManager(private val context: Context) {
                         Log.e(TAG, errorMsg)
                         showToast("Permission denied reading $fileName")
                         isInitialized = false
+                        loadedModelName = null
                         return@withContext Result.failure(SecurityException(errorMsg))
                     }
 
@@ -136,6 +201,7 @@ class AgentManager(private val context: Context) {
                     newEngine.initialize()
                     engine = newEngine
                     isInitialized = true
+                    loadedModelName = fileName
 
                     Log.i(TAG, "LiteRT-LM successfully initialized on $activeBackendName!")
                     showToast("LiteRT-LM Engine Ready [$activeBackendName]")
@@ -145,6 +211,7 @@ class AgentManager(private val context: Context) {
                     Log.e(TAG, "LiteRT-LM Engine initialization failure: ${e.localizedMessage}", e)
                     showToast("Engine Init Failed: ${e.localizedMessage}")
                     isInitialized = false
+                    loadedModelName = null
                     Result.failure(e)
                 }
             }
@@ -417,7 +484,7 @@ class AgentManager(private val context: Context) {
                     "back", "navigate_back" -> "go_back"
                     "recents", "overview" -> "open_recents"
                     "cat", "view_file" -> "read_file"
-                    "patch", "write_file", "save_file" -> "write_patch"
+                    "patch", "save_file" -> "write_patch"
                     "shell", "bash", "cmd" -> "execute_shell"
                     "alarm", "schedule", "remind", "reminder" -> "schedule_alarm"
                     "cron", "cron_job" -> "add_cron_job"
@@ -501,6 +568,7 @@ class AgentManager(private val context: Context) {
             } finally {
                 engine = null
                 isInitialized = false
+                loadedModelName = null
             }
         }
     }
