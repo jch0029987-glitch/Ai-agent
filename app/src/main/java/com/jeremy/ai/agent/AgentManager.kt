@@ -83,7 +83,7 @@ class AgentManager(private val context: Context) {
         } else {
             "unloaded"
         }
-        return "Mode: **${settings.mode}**\n" +
+        return "Mode: **${settings.mode.label}** (`${settings.mode.name}`)\n" +
             "LiteRT-LM: `$liteRtState`\n" +
             "Ollama: `$activeModel` @ `${settings.ollamaBaseUrl}`"
     }
@@ -100,17 +100,20 @@ class AgentManager(private val context: Context) {
             val nextUrl = baseUrl?.trim()?.removeSuffix("/")?.takeIf { it.isNotEmpty() }
                 ?: prev.ollamaBaseUrl
 
-            AiBackendConfig.currentSettings = prev.copy(
-                mode = AiBackendMode.OLLAMA,
-                ollamaBaseUrl = nextUrl,
-                ollamaCoderModel = nextModel
+            val saved = AiBackendConfig.save(
+                context,
+                prev.copy(
+                    mode = AiBackendMode.OLLAMA,
+                    ollamaBaseUrl = nextUrl,
+                    ollamaCoderModel = nextModel
+                )
             )
 
             if (unloadLiteRt && isInitialized) {
                 shutdownEngineInternal()
             }
 
-            "Switched to **OLLAMA** (`$nextModel` @ `$nextUrl`)."
+            "Switched to **${saved.mode.label}** (`${saved.ollamaCoderModel}` @ `${saved.ollamaBaseUrl}`)."
         }
     }
 
@@ -120,20 +123,23 @@ class AgentManager(private val context: Context) {
             ?: "gemma-4-E2B-it.litertlm"
 
         val prev = AiBackendConfig.currentSettings
-        AiBackendConfig.currentSettings = prev.copy(mode = AiBackendMode.LITERT_LM)
+        AiBackendConfig.save(
+            context,
+            prev.copy(mode = AiBackendMode.LITERT_LM)
+        )
 
         val needsInit = !isInitialized || engine == null ||
             (modelFileName != null && loadedModelName != targetModel)
 
         if (!needsInit) {
-            return "Switched to **LITERT_LM** (`$targetModel`)."
+            return "Switched to **Local LiteRT-LM** (`$targetModel`)."
         }
 
         val initResult = setupEngineFromStorage(targetModel)
         return if (initResult.isSuccess) {
-            "Switched to **LITERT_LM** and loaded `$targetModel`."
+            "Switched to **Local LiteRT-LM** and loaded `$targetModel`."
         } else {
-            "Switched to **LITERT_LM**, but failed to load `$targetModel`: ${initResult.exceptionOrNull()?.localizedMessage}"
+            "Switched to **Local LiteRT-LM**, but failed to load `$targetModel`: ${initResult.exceptionOrNull()?.localizedMessage}"
         }
     }
 
@@ -577,3 +583,4 @@ class AgentManager(private val context: Context) {
         shutdownEngineInternal()
     }
 }
+
