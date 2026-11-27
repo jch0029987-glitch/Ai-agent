@@ -231,6 +231,11 @@ class AgentManager(private val context: Context) {
             }
         }
 
+    private fun runSingleLineShell(command: String): String {
+        val sanitized = command.replace("\r", " ").replace("\n", " ").trim().removePrefix("\\").trim()
+        return toolRouter.executeToolCall("TOOL: execute_shell\nARG: $sanitized")
+    }
+
     suspend fun rememberNote(note: String): String = withContext(Dispatchers.IO) {
         val cleanNote = note.trim()
         if (cleanNote.isEmpty()) {
@@ -238,7 +243,7 @@ class AgentManager(private val context: Context) {
         }
         val escapedNote = cleanNote.replace("'", "'\\''")
         val cmd = "mkdir -p ~/.agent/memory && printf -- '- %s\\n' '$escapedNote' >> ~/.agent/MEMORY.md"
-        val result = toolRouter.executeToolCall("TOOL: execute_shell\nARG: $cmd")
+        val result = runSingleLineShell(cmd)
         lastMarkdownLoadMs = 0L
         cachedMarkdownContext = ""
         if (result.contains("Error:", ignoreCase = true)) {
@@ -249,15 +254,8 @@ class AgentManager(private val context: Context) {
     }
 
     suspend fun readMemoryFiles(): String = withContext(Dispatchers.IO) {
-        val cmd = """
-            mkdir -p ~/.agent/memory && \
-            printf "=== ~/.agent/AGENT.md ===\n" && \
-            cat ~/.agent/AGENT.md 2>/dev/null || echo "(empty)"; \
-            printf "\n=== ~/.agent/MEMORY.md ===\n" && \
-            cat ~/.agent/MEMORY.md 2>/dev/null || echo "(empty)"
-        """.trimIndent()
-
-        val output = toolRouter.executeToolCall("TOOL: execute_shell\nARG: $cmd").trim()
+        val cmd = "mkdir -p ~/.agent/memory && echo '=== ~/.agent/AGENT.md ===' && (cat ~/.agent/AGENT.md 2>/dev/null || echo '(empty)') && echo '=== ~/.agent/MEMORY.md ===' && (cat ~/.agent/MEMORY.md 2>/dev/null || echo '(empty)')"
+        val output = runSingleLineShell(cmd).trim()
         if (output.isBlank()) {
             "No memory content returned from ~/.agent."
         } else {
@@ -271,16 +269,10 @@ class AgentManager(private val context: Context) {
             return@withContext cachedMarkdownContext
         }
 
-        val shellCmd = """
-            mkdir -p ~/.agent/memory && \
-            printf "===AGENT===\n" && \
-            head -c $MAX_AGENT_MD_CHARS ~/.agent/AGENT.md 2>/dev/null || true; \
-            printf "\n===MEMORY===\n" && \
-            head -c $MAX_MEMORY_MD_CHARS ~/.agent/MEMORY.md 2>/dev/null || true
-        """.trimIndent()
+        val shellCmd = "mkdir -p ~/.agent/memory && echo '===AGENT===' && (head -c $MAX_AGENT_MD_CHARS ~/.agent/AGENT.md 2>/dev/null || true) && echo '===MEMORY===' && (head -c $MAX_MEMORY_MD_CHARS ~/.agent/MEMORY.md 2>/dev/null || true)"
 
         val termuxResult = runCatching {
-            toolRouter.executeToolCall("TOOL: execute_shell\nARG: $shellCmd")
+            runSingleLineShell(shellCmd)
         }.getOrNull().orEmpty()
 
         val parsed = if (termuxResult.contains("===AGENT===") || termuxResult.contains("===MEMORY===")) {
@@ -638,7 +630,12 @@ class AgentManager(private val context: Context) {
                 val toolResult = if (isDuplicateCall) {
                     "Already executed $toolName with '$argValue'. Do not repeat it; call TOOL: finish with ARG: your final answer now."
                 } else {
-                    val result = toolRouter.executeToolCall("TOOL: $toolName\nARG: $argValue")
+                    val sanitizedArg = if (toolName == "execute_shell") {
+                        argValue.replace("\r", " ").replace("\n", " ").trim().removePrefix("\\").trim()
+                    } else {
+                        argValue
+                    }
+                    val result = toolRouter.executeToolCall("TOOL: $toolName\nARG: $sanitizedArg")
 
                     if (toolName == "schedule_alarm" && result.startsWith("Successfully scheduled")) {
                         val finalSummary = "Task successfully completed: $result"
