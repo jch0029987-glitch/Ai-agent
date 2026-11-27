@@ -346,8 +346,8 @@ class AgentManager(private val context: Context) {
                 val rawScreen = screenService?.getScreenContentSummary() ?: "Accessibility offline."
                 val screenContext = if (rawScreen.length > 300) rawScreen.take(300) + "..." else rawScreen
 
-                val trimmedHistory = if (executionHistory.length > 800) {
-                    executionHistory.takeLast(800)
+                val trimmedHistory = if (executionHistory.length > 1000) {
+                    executionHistory.takeLast(1000)
                 } else {
                     executionHistory.toString()
                 }
@@ -372,7 +372,7 @@ class AgentManager(private val context: Context) {
                     - Local Pixel screen/shell/file tools:
                       * get_screen_content (no ARG needed; reads local phone screen only, not TV/ADB)
                       * execute_shell, patch_file, search_code, read_file, write_patch, open_browser, github_get_issues, get_recent_notifications, open_app, get_installed_apps, click_text, type_text, tap_xy, scroll_down, scroll_up, go_home, go_back, schedule_alarm, add_cron_job, finish
-                    - Use TOOL: finish with ARG: summary when done. Never repeat a tool that returned an error.
+                    - Once a tool returns the requested information, immediately call TOOL: finish with ARG: a clear answer. Never repeat a tool that already succeeded or returned an error.
                 """.trimIndent()
 
                 val rawModelOutput = generateModelTurn(
@@ -438,8 +438,9 @@ class AgentManager(private val context: Context) {
                     return@withContext "Task Finished Successfully:\n$finalSummary\n\nExecution Log:\n$executionHistory"
                 }
 
-                val toolResult = if (toolName == lastToolName && argValue == lastArgValue) {
-                    "Error: Duplicate loop detected. You already called $toolName with argument '$argValue'. Try a different action or call finish."
+                val isDuplicateCall = toolName == lastToolName && argValue == lastArgValue
+                val toolResult = if (isDuplicateCall) {
+                    "Already executed $toolName with '$argValue'. Do not repeat it; call TOOL: finish with ARG: your final answer now."
                 } else {
                     val result = toolRouter.executeToolCall("TOOL: $toolName\nARG: $argValue")
 
@@ -454,7 +455,11 @@ class AgentManager(private val context: Context) {
 
                 executionHistory.append("Step $step -> $toolName($argValue): $toolResult\n")
 
-                if (toolResult.contains("Error:", ignoreCase = true) && toolName == lastToolName) {
+                val isRepeatedRealError = !isDuplicateCall &&
+                    toolResult.contains("Error:", ignoreCase = true) &&
+                    toolName == lastToolName
+
+                if (isRepeatedRealError) {
                     val failMsg = "Aborted after repeated error on $toolName.\n\nHistory:\n$executionHistory"
                     onToken(failMsg)
                     return@withContext failMsg
