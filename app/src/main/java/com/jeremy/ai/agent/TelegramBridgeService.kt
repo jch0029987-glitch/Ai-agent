@@ -244,6 +244,37 @@ class TelegramBridgeService : Service() {
             return
         }
 
+        if (trimmed.startsWith("/remember", ignoreCase = true)) {
+            val note = trimmed.removePrefix("/remember").trim()
+            val manager = AgentBridge.agentManager
+            if (manager == null) {
+                sendTelegramResponse(chatId, "Error: AgentManager not initialized.")
+                return
+            }
+            if (note.isEmpty()) {
+                sendTelegramResponse(chatId, "Usage: `/remember <fact or note>`")
+                return
+            }
+            serviceScope.launch {
+                val reply = manager.rememberNote(note)
+                sendTelegramResponse(chatId, reply)
+            }
+            return
+        }
+
+        if (trimmed.equals("/memory", ignoreCase = true)) {
+            val manager = AgentBridge.agentManager
+            if (manager == null) {
+                sendTelegramResponse(chatId, "Error: AgentManager not initialized.")
+                return
+            }
+            serviceScope.launch {
+                val memoryDump = manager.readMemoryFiles()
+                sendTelegramResponse(chatId, memoryDump)
+            }
+            return
+        }
+
         if (trimmed.equals("/backend", ignoreCase = true) || trimmed.equals("/model", ignoreCase = true)) {
             val status = AgentBridge.agentManager?.getBackendStatus() ?: "Error: AgentManager not initialized."
             sendTelegramResponse(
@@ -417,4 +448,3 @@ class TelegramBridgeService : Service() {
         super.onDestroy()
     }
 }
-

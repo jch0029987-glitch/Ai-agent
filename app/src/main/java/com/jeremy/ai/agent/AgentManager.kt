@@ -47,6 +47,9 @@ class AgentManager(private val context: Context) {
     private var isInitialized = false
     private var loadedModelName: String? = null
 
+    private var cachedMarkdownContext: String = ""
+    private var lastMarkdownLoadMs: Long = 0L
+
     private val inferenceMutex = Mutex()
 
     private val githubClient = GitHubToolClient()
@@ -60,6 +63,11 @@ class AgentManager(private val context: Context) {
 
     companion object {
         private const val TAG = "AgentManager"
+        private const val DEFAULT_LITERT_MODEL = "gemma-4-E2B-it-gpu.litertlm"
+        private const val MARKDOWN_CACHE_TTL_MS = 15_000L
+        private const val MAX_AGENT_MD_CHARS = 2000
+        private const val MAX_MEMORY_MD_CHARS = 2500
+
         private val CASUAL_CHAT_REGEX = Regex("^(hi|hello|hey|sup|what's up|who are you|help|thanks|thank you).*")
         private val ACTION_KEYWORDS = listOf(
             "open", "launch", "click", "tap", "type", "get", "check", "list", "show",
@@ -79,7 +87,7 @@ class AgentManager(private val context: Context) {
         val settings = AiBackendConfig.currentSettings
         val activeModel = settings.ollamaCoderModel.ifBlank { "qwen2.5-coder:3b" }
         val liteRtState = if (isInitialized && engine != null) {
-            "ready (${loadedModelName ?: "gemma-4-E2B-it.litertlm"})"
+            "ready (${loadedModelName ?: DEFAULT_LITERT_MODEL})"
         } else {
             "unloaded"
         }
@@ -120,7 +128,7 @@ class AgentManager(private val context: Context) {
     suspend fun switchToLiteRtLm(modelFileName: String? = null): String {
         val targetModel = modelFileName?.trim()?.takeIf { it.isNotEmpty() }
             ?: loadedModelName
-            ?: "gemma-4-E2B-it.litertlm"
+            ?: DEFAULT_LITERT_MODEL
 
         val prev = AiBackendConfig.currentSettings
         AiBackendConfig.save(
@@ -143,7 +151,7 @@ class AgentManager(private val context: Context) {
         }
     }
 
-    suspend fun setupEngineFromStorage(modelPathOrName: String = "gemma-4-E2B-it.litertlm"): Result<Boolean> =
+    suspend fun setupEngineFromStorage(modelPathOrName: String = DEFAULT_LITERT_MODEL): Result<Boolean> =
         withContext(Dispatchers.IO) {
             inferenceMutex.withLock {
                 try {
@@ -222,6 +230,105 @@ class AgentManager(private val context: Context) {
                 }
             }
         }
+
+    suspend fun rememberNote(note: String): String = withContext(Dispatchers.IO) {
+        val cleanNote = note.trim()
+        if (cleanNote.isEmpty()) {
+            return@withContext "Error: Cannot save an empty memory note."
+        }
+        val escapedNote = cleanNote.replace("'", "'\\''")
+        val cmd = "mkdir -p ~/.agent/memory && printf -- '- %s\\n' '$escapedNote' >> ~/.agent/MEMORY.md"
+        val result = toolRouter.executeToolCall("TOOL: execute_shell\nARG: $cmd")
+        lastMarkdownLoadMs = 0L
+        cachedMarkdownContext = ""
+        if (result.contains("Error:", ignoreCase = true)) {
+            "Error saving to ~/.agent/MEMORY.md: $result"
+        } else {
+            "Saved to `~/.agent/MEMORY.md`: $cleanNote"
+        }
+    }
+
+    suspend fun readMemoryFiles(): String = withContext(Dispatchers.IO) {
+        val cmd = """
+            mkdir -p ~/.agent/memory && \
+            printf "=== ~/.agent/AGENT.md ===\n" && \
+            cat ~/.agent/AGENT.md 2>/dev/null || echo "(empty)"; \
+            printf "\n=== ~/.agent/MEMORY.md ===\n" && \
+            cat ~/.agent/MEMORY.md 2>/dev/null || echo "(empty)"
+        """.trimIndent()
+
+        val output = toolRouter.executeToolCall("TOOL: execute_shell\nARG: $cmd").trim()
+        if (output.isBlank()) {
+            "No memory content returned from ~/.agent."
+        } else {
+            output
+        }
+    }
+
+    private suspend fun loadMarkdownContext(): String = withContext(Dispatchers.IO) {
+        val now = System.currentTimeMillis()
+        if (now - lastMarkdownLoadMs < MARKDOWN_CACHE_TTL_MS && cachedMarkdownContext.isNotBlank()) {
+            return@withContext cachedMarkdownContext
+        }
+
+        val shellCmd = """
+            mkdir -p ~/.agent/memory && \
+            printf "===AGENT===\n" && \
+            head -c $MAX_AGENT_MD_CHARS ~/.agent/AGENT.md 2>/dev/null || true; \
+            printf "\n===MEMORY===\n" && \
+            head -c $MAX_MEMORY_MD_CHARS ~/.agent/MEMORY.md 2>/dev/null || true
+        """.trimIndent()
+
+        val termuxResult = runCatching {
+            toolRouter.executeToolCall("TOOL: execute_shell\nARG: $shellCmd")
+        }.getOrNull().orEmpty()
+
+        val parsed = if (termuxResult.contains("===AGENT===") || termuxResult.contains("===MEMORY===")) {
+            val agentPart = termuxResult
+                .substringAfter("===AGENT===", "")
+                .substringBefore("===MEMORY===")
+                .trim()
+            val memoryPart = termuxResult
+                .substringAfter("===MEMORY===", "")
+                .trim()
+
+            buildString {
+                if (agentPart.isNotBlank() && !agentPart.contains("Error:", ignoreCase = true)) {
+                    append("[AGENT.MD]:\n")
+                    append(agentPart.take(MAX_AGENT_MD_CHARS))
+                    append("\n\n")
+                }
+                if (memoryPart.isNotBlank() && !memoryPart.contains("Error:", ignoreCase = true)) {
+                    append("[MEMORY.MD]:\n")
+                    append(memoryPart.take(MAX_MEMORY_MD_CHARS))
+                    append("\n\n")
+                }
+            }.trim()
+        } else {
+            val fallbackAgent = listOf(
+                File(Environment.getExternalStorageDirectory(), "Download/models/AGENT.md"),
+                File(context.filesDir, "AGENT.md")
+            ).firstOrNull { it.exists() && it.canRead() }?.readText()?.trim()?.take(MAX_AGENT_MD_CHARS).orEmpty()
+
+            val fallbackMemory = listOf(
+                File(Environment.getExternalStorageDirectory(), "Download/models/MEMORY.md"),
+                File(context.filesDir, "MEMORY.md")
+            ).firstOrNull { it.exists() && it.canRead() }?.readText()?.trim()?.take(MAX_MEMORY_MD_CHARS).orEmpty()
+
+            buildString {
+                if (fallbackAgent.isNotBlank()) {
+                    append("[AGENT.MD]:\n$fallbackAgent\n\n")
+                }
+                if (fallbackMemory.isNotBlank()) {
+                    append("[MEMORY.MD]:\n$fallbackMemory\n\n")
+                }
+            }.trim()
+        }
+
+        cachedMarkdownContext = parsed
+        lastMarkdownLoadMs = now
+        parsed
+    }
 
     private fun updateTelegramTicker(botToken: String?, chatId: Long?, messageId: Long?, statusText: String) {
         if (botToken.isNullOrBlank() || chatId == null || messageId == null || botToken == "YOUR_TELEGRAM_BOT_TOKEN") return
@@ -391,13 +498,22 @@ class AgentManager(private val context: Context) {
             val trimmedPrompt = prompt.trim()
             val lowerPrompt = trimmedPrompt.lowercase()
 
+            val mdContext = loadMarkdownContext()
+            val mdSection = if (mdContext.isNotBlank()) "$mdContext\n" else ""
+
             val isActionCommand = ACTION_KEYWORDS.any { lowerPrompt.contains(it) }
             val isCasualChat = !isActionCommand &&
                 (lowerPrompt.matches(CASUAL_CHAT_REGEX) || lowerPrompt.split(" ").size <= 2)
 
             if (isCasualChat) {
+                val casualSystemPrompt = buildString {
+                    append("You are a helpful, concise AI coding assistant running on a Pixel 9 via Termux & Ktor. Respond in 1-2 brief English sentences only.")
+                    if (mdContext.isNotBlank()) {
+                        append("\n\n$mdContext")
+                    }
+                }
                 val resultText = generateModelTurn(
-                    systemInstruction = "You are a helpful, concise AI coding assistant running on a Pixel 9 via Termux & Ktor. Respond in 1-2 brief English sentences only.",
+                    systemInstruction = casualSystemPrompt,
                     userMessage = trimmedPrompt
                 )
                 onToken(resultText)
@@ -428,7 +544,7 @@ class AgentManager(private val context: Context) {
 
                 val systemInstructionText = """
                     You are an autonomous AI coding and network agent running on a local Android Termux & Ktor engine. Execute complex tasks step-by-step.
-                    [NOTIFICATIONS]: $notificationContext
+                    ${mdSection}[NOTIFICATIONS]: $notificationContext
                     [SCREEN HIERARCHY]: $screenContext
                     [HISTORY]: $trimmedHistory
 
@@ -583,4 +699,3 @@ class AgentManager(private val context: Context) {
         shutdownEngineInternal()
     }
 }
-
