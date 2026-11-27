@@ -15,6 +15,8 @@ import org.json.JSONObject
 import java.io.File
 import java.util.UUID
 import java.util.concurrent.CompletableFuture
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.TimeoutException
 
 object TelegramChatContext {
     var activeChatId: Long? = null
@@ -54,6 +56,7 @@ class AgentToolRouter(
                 "recents", "overview" -> "open_recents"
                 "read_file", "cat" -> "read_file"
                 "write_patch", "patch_file", "write_file" -> "write_patch"
+                "shell", "bash", "cmd" -> "execute_shell"
                 "alarm", "schedule", "remind", "reminder" -> "schedule_alarm"
                 "cron", "cron_job" -> "add_cron_job"
                 "scan", "network", "lan_scan" -> "network_scan"
@@ -64,13 +67,26 @@ class AgentToolRouter(
             if (isSensitiveTool(toolName)) {
                 val approved = requestUserApproval(toolName, argValue)
                 if (!approved) {
-                    return "Tool: $toolName\nResult: Error - Action denied by user security gate."
+                    return "Tool: $toolName\nResult: Error - Action denied or timed out in user security gate."
                 }
             }
 
             val screenService = AgentAccessibilityService.instance
 
             val executionResult = when (toolName) {
+                "execute_shell" -> {
+                    if (argValue.isBlank()) {
+                        "Error: Shell command argument is missing."
+                    } else {
+                        ShellSessionManager.appContext = context.applicationContext
+                        ShellSessionManager.executeCommand(
+                            context = context,
+                            chatId = TelegramChatContext.activeChatId ?: 0L,
+                            command = argValue,
+                            timeoutSeconds = 45L
+                        )
+                    }
+                }
                 "network_scan" -> {
                     val argsJson = if (argValue.isBlank()) {
                         "{}"
@@ -315,6 +331,7 @@ class AgentToolRouter(
         argsJson: String,
         timeoutSeconds: Long = 45L
     ): String = withContext(Dispatchers.IO) {
+        ShellSessionManager.appContext = context.applicationContext
         val jobId = "job_${UUID.randomUUID().toString().take(8)}"
         val escapedArgs = argsJson.replace("'", "'\\''")
         val cmd = "/data/data/com.termux/files/usr/bin/python3 ~/agent_tools.py --job-id $jobId --tool $toolName --args-json '$escapedArgs'"
@@ -546,8 +563,14 @@ class AgentToolRouter(
             conn.responseCode
             conn.disconnect()
 
-            return@withContext future.get()
+            return@withContext try {
+                future.get(120, TimeUnit.SECONDS)
+            } catch (_: TimeoutException) {
+                TelegramApprovalStore.pendingApprovals.remove(taskId)
+                false
+            }
         } catch (_: Exception) {
+            TelegramApprovalStore.pendingApprovals.remove(taskId)
             return@withContext false
         }
     }

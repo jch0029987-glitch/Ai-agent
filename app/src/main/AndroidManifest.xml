@@ -153,8 +153,8 @@
         </service>
 
         <!-- Termux Callback Broadcast Receiver -->
-        <receiver 
-            android:name="com.jeremy.ai.agent.TermuxResultReceiver"
+        <receiver
+            android:name="com.jeremy.ai.backend.TermuxResultReceiver"
             android:exported="false" />
 
         <!-- Alarm Trigger Broadcast Receiver -->

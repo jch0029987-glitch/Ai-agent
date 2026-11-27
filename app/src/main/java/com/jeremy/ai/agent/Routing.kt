@@ -5,6 +5,7 @@ import android.app.PendingIntent
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
+import android.os.Build
 import android.os.Bundle
 import android.os.Environment
 import android.util.Log
@@ -20,14 +21,16 @@ import io.ktor.server.plugins.contentnegotiation.*
 import io.ktor.server.request.*
 import io.ktor.server.response.*
 import io.ktor.server.routing.*
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.GlobalScope
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import java.io.File
@@ -77,13 +80,22 @@ object ChatSessionManager {
 }
 
 object ShellSessionManager {
+    private const val TAG = "ShellSessionManager"
     lateinit var appContext: Context
 
     private val workingDirectories = ConcurrentHashMap<Long, File>()
     private val pendingResults = ConcurrentHashMap<Int, CompletableFuture<String>>()
     private val atomicId = AtomicInteger(0)
 
+    internal fun safeAppContext(fallback: Context? = null): Context? {
+        if (::appContext.isInitialized) return appContext.applicationContext
+        val resolved = fallback?.applicationContext
+        if (resolved != null) appContext = resolved
+        return resolved
+    }
+
     fun executeCommand(context: Context, chatId: Long, command: String, timeoutSeconds: Long = 30L): String {
+        val targetContext = safeAppContext(context) ?: context.applicationContext
         val currentDir = workingDirectories.getOrPut(chatId) { File("/data/data/com.termux/files/home") }
 
         if (command.trim().startsWith("cd ")) {
@@ -102,15 +114,16 @@ object ShellSessionManager {
         pendingResults[executionId] = future
 
         try {
-            val callbackIntent = Intent(context, TermuxResultReceiver::class.java).apply {
+            val callbackIntent = Intent(targetContext, TermuxResultReceiver::class.java).apply {
                 putExtra("execution_id", executionId)
             }
 
+            // Must be FLAG_MUTABLE so Termux can attach result extras to the callback intent
             val pendingIntent = PendingIntent.getBroadcast(
-                context,
+                targetContext,
                 executionId,
                 callbackIntent,
-                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_MUTABLE
             )
 
             val intent = Intent().apply {
@@ -123,23 +136,31 @@ object ShellSessionManager {
                 putExtra("com.termux.RUN_COMMAND_PENDING_INTENT", pendingIntent)
             }
 
-            context.startForegroundService(intent)
+            Log.d(TAG, "Dispatching RUN_COMMAND executionId=$executionId timeout=${timeoutSeconds}s")
+            targetContext.startForegroundService(intent)
 
             return try {
                 future.get(timeoutSeconds, TimeUnit.SECONDS) ?: "Command executed with no output."
-            } catch (e: java.util.concurrent.TimeoutException) {
+            } catch (_: java.util.concurrent.TimeoutException) {
+                Log.w(TAG, "Timed out waiting for Termux callback on executionId=$executionId")
                 "Error: Termux execution timed out waiting for callback."
             } finally {
                 pendingResults.remove(executionId)
             }
         } catch (e: Exception) {
             pendingResults.remove(executionId)
+            Log.e(TAG, "Termux Intent dispatch error on executionId=$executionId", e)
             return "Termux Intent dispatch error: ${e.localizedMessage}"
         }
     }
 
     fun handleResult(executionId: Int, intent: Intent, bundle: Bundle?) {
-        val future = pendingResults.remove(executionId) ?: return
+        Log.d(TAG, "Received Termux callback for executionId=$executionId")
+        val future = pendingResults.remove(executionId)
+        if (future == null) {
+            Log.w(TAG, "No pending future found for executionId=$executionId (already timed out or unknown)")
+            return
+        }
 
         val allExtras = mutableMapOf<String, Any?>()
         bundle?.keySet()?.forEach { key -> allExtras[key] = bundle.get(key) }
@@ -166,6 +187,7 @@ class TermuxResultReceiver : BroadcastReceiver() {
         val bundle = intent.getBundleExtra("com.termux.plugin.result.bundle")
             ?: intent.getBundleExtra("result")
             ?: intent.extras
+        Log.d("TermuxResultReceiver", "onReceive executionId=$executionId keys=${intent.extras?.keySet()}")
         ShellSessionManager.handleResult(executionId, intent, bundle)
     }
 }
@@ -191,6 +213,8 @@ class TermuxResultReceiver : BroadcastReceiver() {
 // ==========================================
 // 3. Utilities & Path Resolution
 // ==========================================
+private val serverScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
+
 fun getAvailableModels(): List<OpenAIModelObject> {
     val settings = AiBackendConfig.currentSettings
     if (settings.mode == AiBackendMode.OLLAMA) {
@@ -333,10 +357,7 @@ fun Application.configureServer() {
 }
 
 fun Application.configureRouting() {
-    try {
-        AiBackendConfig.load(ShellSessionManager.appContext)
-    } catch (_: UninitializedPropertyAccessException) {
-    }
+    ShellSessionManager.safeAppContext()?.let { AiBackendConfig.load(it) }
     val telegramBotToken = BuildConfig.TELEGRAM_BOT_TOKEN
 
     routing {
@@ -347,51 +368,54 @@ fun Application.configureRouting() {
                 val resultJson = when (req.method) {
                     "initialize" -> {
                         JsonObject(mapOf(
-                            "protocolVersion" to kotlinx.serialization.json.JsonPrimitive("2024-11-05"),
-                            "serverInfo" to kotlinx.serialization.json.JsonObject(mapOf(
-                                "name" to kotlinx.serialization.json.JsonPrimitive("pixel9-android-mcp"),
-                                "version" to kotlinx.serialization.json.JsonPrimitive("2.0.0")
+                            "protocolVersion" to JsonPrimitive("2024-11-05"),
+                            "serverInfo" to JsonObject(mapOf(
+                                "name" to JsonPrimitive("pixel9-android-mcp"),
+                                "version" to JsonPrimitive("2.0.0")
                             )),
-                            "capabilities" to kotlinx.serialization.json.JsonObject(mapOf(
-                                "tools" to kotlinx.serialization.json.JsonObject(emptyMap()),
-                                "resources" to kotlinx.serialization.json.JsonObject(emptyMap())
+                            "capabilities" to JsonObject(mapOf(
+                                "tools" to JsonObject(emptyMap()),
+                                "resources" to JsonObject(emptyMap())
                             ))
                         ))
                     }
                     "tools/list" -> {
                         JsonObject(mapOf(
                             "tools" to kotlinx.serialization.json.JsonArray(listOf(
-                                kotlinx.serialization.json.JsonObject(mapOf("name" to kotlinx.serialization.json.JsonPrimitive("read_workspace_file"), "description" to kotlinx.serialization.json.JsonPrimitive("Read contents of a local file"))),
-                                kotlinx.serialization.json.JsonObject(mapOf("name" to kotlinx.serialization.json.JsonPrimitive("write_workspace_file"), "description" to kotlinx.serialization.json.JsonPrimitive("Write or overwrite a file"))),
-                                kotlinx.serialization.json.JsonObject(mapOf("name" to kotlinx.serialization.json.JsonPrimitive("patch_file"), "description" to kotlinx.serialization.json.JsonPrimitive("Patch a file using search and replace blocks"))),
-                                kotlinx.serialization.json.JsonObject(mapOf("name" to kotlinx.serialization.json.JsonPrimitive("search_code"), "description" to kotlinx.serialization.json.JsonPrimitive("Search codebase using ripgrep or grep"))),
-                                kotlinx.serialization.json.JsonObject(mapOf("name" to kotlinx.serialization.json.JsonPrimitive("list_directory"), "description" to kotlinx.serialization.json.JsonPrimitive("List files in directory"))),
-                                kotlinx.serialization.json.JsonObject(mapOf("name" to kotlinx.serialization.json.JsonPrimitive("execute_shell"), "description" to kotlinx.serialization.json.JsonPrimitive("Execute a shell command"))),
-                                kotlinx.serialization.json.JsonObject(mapOf("name" to kotlinx.serialization.json.JsonPrimitive("schedule_alarm"), "description" to kotlinx.serialization.json.JsonPrimitive("Schedule an exact alarm or background cron reminder"))),
-                                kotlinx.serialization.json.JsonObject(mapOf("name" to kotlinx.serialization.json.JsonPrimitive("add_cron_job"), "description" to kotlinx.serialization.json.JsonPrimitive("Register a periodic background cron job")))
+                                JsonObject(mapOf("name" to JsonPrimitive("read_workspace_file"), "description" to JsonPrimitive("Read contents of a local file"))),
+                                JsonObject(mapOf("name" to JsonPrimitive("write_workspace_file"), "description" to JsonPrimitive("Write or overwrite a file"))),
+                                JsonObject(mapOf("name" to JsonPrimitive("patch_file"), "description" to JsonPrimitive("Patch a file using search and replace blocks"))),
+                                JsonObject(mapOf("name" to JsonPrimitive("search_code"), "description" to JsonPrimitive("Search codebase using ripgrep or grep"))),
+                                JsonObject(mapOf("name" to JsonPrimitive("list_directory"), "description" to JsonPrimitive("List files in directory"))),
+                                JsonObject(mapOf("name" to JsonPrimitive("execute_shell"), "description" to JsonPrimitive("Execute a shell command"))),
+                                JsonObject(mapOf("name" to JsonPrimitive("schedule_alarm"), "description" to JsonPrimitive("Schedule an exact alarm or background cron reminder"))),
+                                JsonObject(mapOf("name" to JsonPrimitive("add_cron_job"), "description" to JsonPrimitive("Register a periodic background cron job")))
                             ))
                         ))
                     }
                     "resources/list" -> {
                         JsonObject(mapOf(
                             "resources" to kotlinx.serialization.json.JsonArray(listOf(
-                                kotlinx.serialization.json.JsonObject(mapOf("uri" to kotlinx.serialization.json.JsonPrimitive("workspace://git/status"), "name" to kotlinx.serialization.json.JsonPrimitive("Git Status"))),
-                                kotlinx.serialization.json.JsonObject(mapOf("uri" to kotlinx.serialization.json.JsonPrimitive("system://device/info"), "name" to kotlinx.serialization.json.JsonPrimitive("Device Info")))
+                                JsonObject(mapOf("uri" to JsonPrimitive("workspace://git/status"), "name" to JsonPrimitive("Git Status"))),
+                                JsonObject(mapOf("uri" to JsonPrimitive("system://device/info"), "name" to JsonPrimitive("Device Info")))
                             ))
                         ))
                     }
                     "resources/read" -> {
                         val uri = req.params?.get("uri")?.jsonPrimitive?.content ?: ""
+                        val ctx = ShellSessionManager.safeAppContext()
                         val content = when (uri) {
-                            "workspace://git/status" -> ShellSessionManager.executeCommand(ShellSessionManager.appContext, 0L, "git status")
+                            "workspace://git/status" -> if (ctx != null) {
+                                withContext(Dispatchers.IO) { ShellSessionManager.executeCommand(ctx, 0L, "git status") }
+                            } else "Error: App context not initialized"
                             "system://device/info" -> "Device: Google Pixel 9 (Tensor G4)\nRuntime: Termux / Android Ktor"
                             else -> "Error: Unknown resource URI"
                         }
                         JsonObject(mapOf(
                             "contents" to kotlinx.serialization.json.JsonArray(listOf(
-                                kotlinx.serialization.json.JsonObject(mapOf(
-                                    "uri" to kotlinx.serialization.json.JsonPrimitive(uri),
-                                    "text" to kotlinx.serialization.json.JsonPrimitive(content)
+                                JsonObject(mapOf(
+                                    "uri" to JsonPrimitive(uri),
+                                    "text" to JsonPrimitive(content)
                                 ))
                             ))
                         ))
@@ -433,7 +457,12 @@ fun Application.configureRouting() {
                             }
                             "search_code" -> {
                                 val query = arguments?.get("query")?.jsonPrimitive?.content ?: arguments?.get("command")?.jsonPrimitive?.content ?: ""
-                                ShellSessionManager.executeCommand(ShellSessionManager.appContext, 0L, "rg --line-number --no-heading '$query' /data/data/com.termux/files/home/Ai-agent || grep -rnw '/data/data/com.termux/files/home/Ai-agent' -e '$query'")
+                                val ctx = ShellSessionManager.safeAppContext()
+                                if (ctx != null) {
+                                    withContext(Dispatchers.IO) {
+                                        ShellSessionManager.executeCommand(ctx, 0L, "rg --line-number --no-heading '$query' /data/data/com.termux/files/home/Ai-agent || grep -rnw '/data/data/com.termux/files/home/Ai-agent' -e '$query'")
+                                    }
+                                } else "Error: App context not initialized"
                             }
                             "list_directory" -> {
                                 val path = arguments?.get("path")?.jsonPrimitive?.content ?: "."
@@ -444,7 +473,12 @@ fun Application.configureRouting() {
                             }
                             "execute_shell" -> {
                                 val command = arguments?.get("command")?.jsonPrimitive?.content ?: ""
-                                ShellSessionManager.executeCommand(ShellSessionManager.appContext, 0L, command)
+                                val ctx = ShellSessionManager.safeAppContext()
+                                if (ctx != null) {
+                                    withContext(Dispatchers.IO) {
+                                        ShellSessionManager.executeCommand(ctx, 0L, command)
+                                    }
+                                } else "Error: App context not initialized"
                             }
                             "schedule_alarm" -> {
                                 val timeSpec = arguments?.get("time")?.jsonPrimitive?.content ?: "10m"
@@ -457,30 +491,34 @@ fun Application.configureRouting() {
                                 }
                                 val triggerTime = System.currentTimeMillis() + delayMillis
 
-                                val context = ShellSessionManager.appContext
-                                val alarmManager = context.getSystemService(Context.ALARM_SERVICE) as AlarmManager
-                                val intent = Intent(context, AlarmReceiver::class.java).apply {
-                                    putExtra("chat_id", targetChatId)
-                                    putExtra("prompt", promptTask)
-                                    putExtra("bot_token", telegramBotToken)
-                                }
-                                val pendingIntent = PendingIntent.getBroadcast(
-                                    context,
-                                    (targetChatId + triggerTime).toInt(),
-                                    intent,
-                                    PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
-                                )
-                                try {
-                                    if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.S && !alarmManager.canScheduleExactAlarms()) {
-                                        alarmManager.set(AlarmManager.RTC_WAKEUP, triggerTime, pendingIntent)
-                                    } else {
-                                        alarmManager.setExactAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, triggerTime, pendingIntent)
+                                val context = ShellSessionManager.safeAppContext()
+                                if (context == null) {
+                                    "Error: App context not initialized"
+                                } else {
+                                    val alarmManager = context.getSystemService(Context.ALARM_SERVICE) as AlarmManager
+                                    val intent = Intent(context, AlarmReceiver::class.java).apply {
+                                        putExtra("chat_id", targetChatId)
+                                        putExtra("prompt", promptTask)
+                                        putExtra("bot_token", telegramBotToken)
                                     }
-                                } catch (_: SecurityException) {
-                                    alarmManager.set(AlarmManager.RTC_WAKEUP, triggerTime, pendingIntent)
-                                }
+                                    val pendingIntent = PendingIntent.getBroadcast(
+                                        context,
+                                        (targetChatId + triggerTime).toInt(),
+                                        intent,
+                                        PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+                                    )
+                                    try {
+                                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S && !alarmManager.canScheduleExactAlarms()) {
+                                            alarmManager.set(AlarmManager.RTC_WAKEUP, triggerTime, pendingIntent)
+                                        } else {
+                                            alarmManager.setExactAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, triggerTime, pendingIntent)
+                                        }
+                                    } catch (_: SecurityException) {
+                                        alarmManager.set(AlarmManager.RTC_WAKEUP, triggerTime, pendingIntent)
+                                    }
 
-                                "Successfully scheduled exact alarm for '$promptTask' in $timeSpec for chat $targetChatId."
+                                    "Successfully scheduled exact alarm for '$promptTask' in $timeSpec for chat $targetChatId."
+                                }
                             }
                             "add_cron_job" -> {
                                 "Cron job task registered successfully."
@@ -490,9 +528,9 @@ fun Application.configureRouting() {
 
                         JsonObject(mapOf(
                             "content" to kotlinx.serialization.json.JsonArray(listOf(
-                                kotlinx.serialization.json.JsonObject(mapOf(
-                                    "type" to kotlinx.serialization.json.JsonPrimitive("text"),
-                                    "text" to kotlinx.serialization.json.JsonPrimitive(toolOutput)
+                                JsonObject(mapOf(
+                                    "type" to JsonPrimitive("text"),
+                                    "text" to JsonPrimitive(toolOutput)
                                 ))
                             ))
                         ))
@@ -593,8 +631,8 @@ fun Application.configureRouting() {
                 call.respond(
                     HttpStatusCode.BadRequest,
                     JsonObject(mapOf(
-                        "ok" to kotlinx.serialization.json.JsonPrimitive(false),
-                        "error" to kotlinx.serialization.json.JsonPrimitive("TELEGRAM_BOT_TOKEN missing")
+                        "ok" to JsonPrimitive(false),
+                        "error" to JsonPrimitive("TELEGRAM_BOT_TOKEN missing")
                     ))
                 )
                 return@post
@@ -603,8 +641,8 @@ fun Application.configureRouting() {
                 call.respond(
                     HttpStatusCode.BadRequest,
                     JsonObject(mapOf(
-                        "ok" to kotlinx.serialization.json.JsonPrimitive(false),
-                        "error" to kotlinx.serialization.json.JsonPrimitive("No chat_id available")
+                        "ok" to JsonPrimitive(false),
+                        "error" to JsonPrimitive("No chat_id available")
                     ))
                 )
                 return@post
@@ -617,18 +655,18 @@ fun Application.configureRouting() {
                 call.respond(
                     HttpStatusCode.OK,
                     JsonObject(mapOf(
-                        "ok" to kotlinx.serialization.json.JsonPrimitive(true),
-                        "chat_id" to kotlinx.serialization.json.JsonPrimitive(chatId.toString()),
-                        "message_id" to kotlinx.serialization.json.JsonPrimitive(sentId.toString())
+                        "ok" to JsonPrimitive(true),
+                        "chat_id" to JsonPrimitive(chatId.toString()),
+                        "message_id" to JsonPrimitive(sentId.toString())
                     ))
                 )
             } else {
                 call.respond(
                     HttpStatusCode.BadGateway,
                     JsonObject(mapOf(
-                        "ok" to kotlinx.serialization.json.JsonPrimitive(false),
-                        "chat_id" to kotlinx.serialization.json.JsonPrimitive(chatId.toString()),
-                        "error" to kotlinx.serialization.json.JsonPrimitive("Failed to send Telegram message; check logcat TelegramRouting")
+                        "ok" to JsonPrimitive(false),
+                        "chat_id" to JsonPrimitive(chatId.toString()),
+                        "error" to JsonPrimitive("Failed to send Telegram message; check logcat TelegramRouting")
                     ))
                 )
             }
@@ -640,7 +678,9 @@ fun Application.configureRouting() {
                 val update = call.receive<TelegramUpdate>()
                 val callbackQuery = update.callbackQuery
                 if (callbackQuery != null) {
-                    answerCallbackQuery(telegramBotToken, callbackQuery.id)
+                    withContext(Dispatchers.IO) {
+                        answerCallbackQuery(telegramBotToken, callbackQuery.id)
+                    }
                     val data = callbackQuery.data ?: ""
                     val msg = callbackQuery.message
                     val chatId = msg?.chat?.id
@@ -650,7 +690,9 @@ fun Application.configureRouting() {
                         val parts = data.split(":")
                         val approved = (parts[0] == "approve")
                         TelegramApprovalStore.pendingApprovals.remove(parts[1])?.complete(approved)
-                        editTelegramMessage(telegramBotToken, chatId, messageId, "${msg.text}\n\n${if (approved) "✅ *Action Approved*" else "⛔ *Action Denied*"}")
+                        withContext(Dispatchers.IO) {
+                            editTelegramMessage(telegramBotToken, chatId, messageId, "${msg.text}\n\n${if (approved) "✅ *Action Approved*" else "⛔ *Action Denied*"}")
+                        }
                     }
                     call.respond(HttpStatusCode.OK, mapOf("response" to "Callback handled."))
                     return@post
@@ -671,7 +713,12 @@ fun Application.configureRouting() {
 
                     if (text.startsWith("/shell ")) {
                         val cmd = text.removePrefix("/shell").trim()
-                        val result = ShellSessionManager.executeCommand(ShellSessionManager.appContext, chatId, cmd)
+                        val ctx = ShellSessionManager.safeAppContext()
+                        val result = if (ctx != null) {
+                            withContext(Dispatchers.IO) { ShellSessionManager.executeCommand(ctx, chatId, cmd) }
+                        } else {
+                            "Error: App context not initialized"
+                        }
                         call.respond(HttpStatusCode.OK, mapOf("response" to "💻 *Shell Output:*\n```bash\n$result\n```"))
                         return@post
                     }
@@ -683,9 +730,11 @@ fun Application.configureRouting() {
                     } else {
                         "LiteRT-LM"
                     }
-                    sendTelegramMessage(telegramBotToken, chatId, "⚙️ *Agent Initializing [$backendLabel]...*\n`Processing prompt`")
+                    withContext(Dispatchers.IO) {
+                        sendTelegramMessage(telegramBotToken, chatId, "⚙️ *Agent Initializing [$backendLabel]...*\n`Processing prompt`")
+                    }
 
-                    GlobalScope.launch(Dispatchers.Default) {
+                    serverScope.launch(Dispatchers.Default) {
                         try {
                             val history = ChatSessionManager.getHistory(clientId)
                             val fullPrompt = buildString {
@@ -704,9 +753,13 @@ fun Application.configureRouting() {
                             ChatSessionManager.appendMessage(clientId, "User", text)
                             ChatSessionManager.appendMessage(clientId, "Assistant", finalResponse)
 
-                            sendTelegramMessage(telegramBotToken, chatId, finalResponse)
+                            withContext(Dispatchers.IO) {
+                                sendTelegramMessage(telegramBotToken, chatId, finalResponse)
+                            }
                         } catch (e: Exception) {
-                            sendTelegramMessage(telegramBotToken, chatId, "❌ Error executing task: ${e.localizedMessage}")
+                            withContext(Dispatchers.IO) {
+                                sendTelegramMessage(telegramBotToken, chatId, "❌ Error executing task: ${e.localizedMessage}")
+                            }
                         }
                     }
                     return@post
