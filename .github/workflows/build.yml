@@ -46,3 +46,34 @@ jobs:
         with:
           name: release-apk
           path: app/build/outputs/apk/release/*.apk
+
+      - name: Send APK to Telegram
+        if: success()
+        env:
+          BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          CHAT_ID: ${{ secrets.TELEGRAM_ALLOWED_USER_ID }}
+          SHA_SHORT: ${{ github.sha }}
+          RUN_URL: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          APK_PATH=$(find app/build/outputs/apk/release -name "*.apk" -type f | head -n 1)
+          if [ -z "$APK_PATH" ]; then
+            echo "No release APK found under app/build/outputs/apk/release"
+            exit 1
+          fi
+
+          SIZE_BYTES=$(stat -c%s "$APK_PATH")
+          MAX_BYTES=$((50 * 1024 * 1024))
+
+          if [ "$SIZE_BYTES" -gt "$MAX_BYTES" ]; then
+            curl -s -S -X POST "https://api.telegram.org/bot${BOT_TOKEN}/sendMessage" \
+              -d "chat_id=${CHAT_ID}" \
+              --data-urlencode "text=APK built from ${SHA_SHORT:0:7}, but size (${SIZE_BYTES} bytes) exceeds Telegram's 50 MB bot limit. Download from Actions artifact: ${RUN_URL}"
+            exit 0
+          fi
+
+          RESPONSE=$(curl -s -S -X POST "https://api.telegram.org/bot${BOT_TOKEN}/sendDocument" \
+            -F "chat_id=${CHAT_ID}" \
+            -F "document=@${APK_PATH}" \
+            -F "caption=Signed APK (${SHA_SHORT:0:7})")
+          echo "$RESPONSE"
+          echo "$RESPONSE" | grep -q '"ok":true'
