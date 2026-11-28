@@ -489,4 +489,216 @@ class AgentManager(private val context: Context) {
             if (telegramChatId != null) {
                 TelegramChatContext.activeChatId = telegramChatId
             }
-            if (!telegramBotToken.isNullOrBlank() && telegramBo
+            if (!telegramBotToken.isNullOrBlank() && telegramBotToken != "YOUR_TELEGRAM_BOT_TOKEN") {
+                TelegramChatContext.botToken = telegramBotToken
+            }
+
+            val trimmedPrompt = prompt.trim()
+            val lowerPrompt = trimmedPrompt.lowercase()
+
+            val mdContext = loadMarkdownContext()
+            val mdSection = if (mdContext.isNotBlank()) "$mdContext\n" else ""
+
+            val isActionCommand = ACTION_KEYWORDS.any { lowerPrompt.contains(it) }
+            val isCasualChat = !isActionCommand &&
+                (lowerPrompt.matches(CASUAL_CHAT_REGEX) || lowerPrompt.split(" ").size <= 2)
+
+            if (isCasualChat) {
+                val casualSystemPrompt = buildString {
+                    append("You are a helpful, concise AI coding assistant running on a Pixel 9 via Termux & Ktor. Respond in 1-2 brief English sentences only.")
+                    if (mdContext.isNotBlank()) {
+                        append("\n\n$mdContext")
+                    }
+                }
+                val resultText = generateModelTurn(
+                    systemInstruction = casualSystemPrompt,
+                    userMessage = trimmedPrompt
+                )
+                onToken(resultText)
+                return@withContext resultText
+            }
+
+            val maxSteps = 8
+            val executionHistory = StringBuilder()
+            val currentGoal = prompt
+
+            var lastToolName = ""
+            var lastArgValue = ""
+            var lastSuccessfulResult: String? = null
+
+            for (step in 1..maxSteps) {
+                val rawNotification = AgentNotificationListener.getContextSummary()
+                val notificationContext = if (rawNotification.length > 200) rawNotification.take(200) + "..." else rawNotification
+
+                val screenService = AgentAccessibilityService.instance
+                val rawScreen = screenService?.getScreenContentSummary() ?: "Accessibility offline."
+                val screenContext = if (rawScreen.length > 300) rawScreen.take(300) + "..." else rawScreen
+
+                val trimmedHistory = if (executionHistory.length > 1000) {
+                    executionHistory.takeLast(1000)
+                } else {
+                    executionHistory.toString()
+                }
+
+                val systemInstructionText = """
+                    You are an autonomous AI coding and network agent running on a local Android Termux & Ktor engine. Execute complex tasks step-by-step.
+                    ${mdSection}[NOTIFICATIONS]: $notificationContext
+                    [SCREEN HIERARCHY]: $screenContext
+                    [HISTORY]: $trimmedHistory
+
+                    Rules:
+                    - Output format:
+                      TOOL: tool_name
+                      ARG: argument_value
+                    - Remote network/TV/ADB tools (runs ~/agent_tools.py in Termux):
+                      * adb -> ARG JSON: {"device":"chromecast_hd","action":"foreground_app"} (actions: foreground_app, shell, install_apk, pair, connect)
+                      * network_scan -> ARG JSON: {"subnet_prefix":"192.168.1"} (or {})
+                      * service_ping -> ARG JSON: {}
+                      * roku -> ARG JSON: {"device":"roku","action":"active_app"}
+                      * kodi -> ARG JSON: {"device":"kodi","method":"Player.GetActivePlayers"}
+                      * ssh -> ARG JSON: {"host":"...","command":"..."}
+                    - Local Pixel screen/shell/file tools:
+                      * get_screen_content (no ARG needed; reads local phone screen only, not TV/ADB)
+                      * execute_shell, patch_file, search_code, read_file, write_patch, open_browser, github_get_issues, get_recent_notifications, open_app, get_installed_apps, click_text, type_text, tap_xy, scroll_down, scroll_up, go_home, go_back, schedule_alarm, add_cron_job, finish
+                    - Once a tool returns the requested information, immediately call TOOL: finish with ARG: a clear answer. Never repeat a tool that already succeeded or returned an error.
+                """.trimIndent()
+
+                val rawModelOutput = generateModelTurn(
+                    systemInstruction = systemInstructionText,
+                    userMessage = "Task: $currentGoal\nTOOL:"
+                )
+
+                val toolIndex = rawModelOutput.indexOf("TOOL:")
+                val cleanOutput = if (toolIndex != -1) rawModelOutput.substring(toolIndex) else rawModelOutput
+                val formattedOutput = if (cleanOutput.startsWith("TOOL:")) cleanOutput else "TOOL:${cleanOutput.trimStart()}"
+
+                val lines = formattedOutput.lines().map { it.trim() }
+                val toolLine = lines.find { it.startsWith("TOOL:") } ?: "TOOL: unknown"
+                val argLine = lines.find { it.startsWith("ARG:") }
+
+                var rawToolName = toolLine.removePrefix("TOOL:").trim().lowercase()
+                var argValue = argLine?.removePrefix("ARG:")?.trim() ?: ""
+
+                if (rawToolName.contains("(")) {
+                    val parenIndex = rawToolName.indexOf('(')
+                    val innerArgs = rawToolName.substring(parenIndex + 1, rawToolName.lastIndexOf(')')).trim()
+                        .removeSurrounding("\"").removeSurrounding("'")
+                    rawToolName = rawToolName.substring(0, parenIndex).trim()
+                    if (argValue.isBlank() && innerArgs.isNotBlank()) {
+                        argValue = innerArgs
+                    }
+                }
+                if (rawToolName.contains(":")) {
+                    val parts = rawToolName.split(":").map { it.trim() }.filter { it.isNotEmpty() }
+                    rawToolName = parts.last()
+                }
+
+                val toolName = when (rawToolName) {
+                    "activate_network", "launch_browser", "open_url" -> "open_browser"
+                    "launch_app", "start_app" -> "open_app"
+                    "tap_text", "press_text" -> "click_text"
+                    "list_apps", "get_apps", "apps", "open_apps" -> "get_installed_apps"
+                    "notifications", "get_notifications", "check_notifications" -> "get_recent_notifications"
+                    "screen", "screen_content", "read_screen" -> "get_screen_content"
+                    "home", "navigate_home" -> "go_home"
+                    "back", "navigate_back" -> "go_back"
+                    "recents", "overview" -> "open_recents"
+                    "cat", "view_file" -> "read_file"
+                    "patch", "save_file" -> "write_patch"
+                    "shell", "bash", "cmd" -> "execute_shell"
+                    "alarm", "schedule", "remind", "reminder" -> "schedule_alarm"
+                    "cron", "cron_job" -> "add_cron_job"
+                    "scan", "network", "lan_scan" -> "network_scan"
+                    "ping", "services", "health_check" -> "service_ping"
+                    else -> rawToolName
+                }
+
+                updateTelegramTicker(
+                    botToken = telegramBotToken,
+                    chatId = telegramChatId,
+                    messageId = telegramMessageId,
+                    statusText = "⚙️ *Step $step/$maxSteps:* Executing `$toolName($argValue)`"
+                )
+
+                if (toolName == "finish") {
+                    val finalSummary = if (argValue.isNotBlank()) argValue else "Task successfully completed."
+                    onToken(finalSummary)
+                    return@withContext "Task Finished Successfully:\n$finalSummary\n\nExecution Log:\n$executionHistory"
+                }
+
+                val isDuplicateCall = toolName == lastToolName && argValue == lastArgValue
+                if (isDuplicateCall && lastSuccessfulResult != null) {
+                    val autoSummary = lastSuccessfulResult
+                    onToken(autoSummary)
+                    return@withContext "Task Finished Successfully:\n$autoSummary\n\nExecution Log:\n$executionHistory"
+                }
+
+                val toolResult = if (isDuplicateCall) {
+                    "Already executed $toolName with '$argValue'. Do not repeat it; call TOOL: finish with ARG: your final answer now."
+                } else {
+                    val sanitizedArg = if (toolName == "execute_shell") {
+                        argValue.replace("\r", " ").replace("\n", " ").trim().removePrefix("\\").trim()
+                    } else {
+                        argValue
+                    }
+                    val result = toolRouter.executeToolCall("TOOL: $toolName\nARG: $sanitizedArg")
+
+                    if (toolName == "schedule_alarm" && result.startsWith("Successfully scheduled")) {
+                        val finalSummary = "Task successfully completed: $result"
+                        onToken(finalSummary)
+                        return@withContext "Task Finished Successfully:\n$finalSummary"
+                    }
+
+                    result
+                }
+
+                executionHistory.append("Step $step -> $toolName($argValue): $toolResult\n")
+
+                if (!isDuplicateCall) {
+                    lastSuccessfulResult = if (!toolResult.contains("Error:", ignoreCase = true)) {
+                        toolResult
+                    } else {
+                        null
+                    }
+                }
+
+                val isRepeatedRealError = !isDuplicateCall &&
+                    toolResult.contains("Error:", ignoreCase = true) &&
+                    toolName == lastToolName
+
+                if (isRepeatedRealError) {
+                    val failMsg = "Aborted after repeated error on $toolName.\n\nHistory:\n$executionHistory"
+                    onToken(failMsg)
+                    return@withContext failMsg
+                }
+
+                lastToolName = toolName
+                lastArgValue = argValue
+
+                if (step == maxSteps) {
+                    return@withContext "Reached maximum iteration limit ($maxSteps steps).\n\nHistory:\n$executionHistory"
+                }
+            }
+
+            return@withContext "Agent execution loop terminated."
+        }
+    }
+
+    private fun shutdownEngineInternal() {
+        if (isInitialized) {
+            try {
+                engine?.close()
+            } catch (e: Exception) {
+                Log.e(TAG, "Error shutting down LiteRT-LM Engine", e)
+            } finally {
+                engine = null
+                isInitialized = false
+                loadedModelName = null
+            }
+        }
+    }
+
+    fun shutdown() {
+        shutdownEngineInternal()
+    }
+}
