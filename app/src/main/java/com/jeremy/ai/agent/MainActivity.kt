@@ -30,6 +30,8 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.core.content.ContextCompat
 import com.jeremy.ai.agent.ui.AgentChatScreen
+import com.jeremy.ai.backend.ShellSessionManager
+import com.jeremy.ai.backend.configureRouting
 import io.ktor.client.*
 import io.ktor.client.engine.cio.*
 import io.ktor.client.request.*
@@ -47,8 +49,6 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.serialization.json.Json
 import kotlin.time.Duration.Companion.seconds
-import com.jeremy.ai.backend.ShellSessionManager
-import com.jeremy.ai.backend.configureRouting
 
 class MainActivity : ComponentActivity() {
 
@@ -80,6 +80,9 @@ class MainActivity : ComponentActivity() {
         enableEdgeToEdge()
         super.onCreate(savedInstanceState)
 
+        ShizukuBridge.registerListeners()
+        ShizukuBridge.requestPermissionIfNeeded()
+
         setupGlobalCrashHandler()
         checkAndRequestPermissions()
         checkAndRequestExactAlarmPermission()
@@ -103,10 +106,10 @@ class MainActivity : ComponentActivity() {
                 val client = HttpClient(CIO)
                 val token = BuildConfig.TELEGRAM_BOT_TOKEN
                 val url = "https://api.telegram.org/bot$token/getMe"
-                
+
                 val response = client.get(url).bodyAsText()
                 client.close()
-                
+
                 Handler(Looper.getMainLooper()).post {
                     Toast.makeText(this@MainActivity, "API Test OK: $response", Toast.LENGTH_LONG).show()
                 }
@@ -198,6 +201,7 @@ class MainActivity : ComponentActivity() {
     }
 
     override fun onDestroy() {
+        ShizukuBridge.unregisterListeners()
         super.onDestroy()
         try {
             ktorServer?.stop(1000, 2000)
@@ -216,14 +220,14 @@ class MainActivity : ComponentActivity() {
     private fun checkAndRequestExactAlarmPermission() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
             val alarmManager = getSystemService(Context.ALARM_SERVICE) as AlarmManager
-            
+
             try {
                 val dummyIntent = Intent(this, AlarmReceiver::class.java).apply {
                     putExtra("chat_id", 0L)
                     putExtra("prompt", "init_probe")
                 }
                 val pendingIntent = PendingIntent.getBroadcast(
-                    this, 8888, dummyIntent, 
+                    this, 8888, dummyIntent,
                     PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
                 )
                 alarmManager.setExact(AlarmManager.RTC_WAKEUP, System.currentTimeMillis() + 86400000L, pendingIntent)
