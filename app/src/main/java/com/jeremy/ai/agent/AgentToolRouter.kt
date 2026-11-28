@@ -1,16 +1,21 @@
 package com.jeremy.ai.agent
 
+import android.Manifest
 import android.app.AlarmManager
 import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Environment
+import android.provider.Settings
+import androidx.core.content.ContextCompat
 import com.jeremy.ai.backend.PairingPromptManager
 import com.jeremy.ai.backend.ShellSessionManager
 import com.jeremy.ai.backend.TelegramApprovalStore
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
 import java.util.UUID
@@ -137,6 +142,9 @@ class AgentToolRouter(
                 "ssh" -> {
                     val argsJson = buildSshArgsJson(argValue)
                     runAgentToolsScript("ssh", argsJson, timeoutSeconds = 30L)
+                }
+                "system_setting" -> {
+                    SecureSettingsHelper.execute(context, argValue)
                 }
                 "open_browser" -> {
                     val url = if (argValue.isNotEmpty()) argValue else "https://google.com"
@@ -589,7 +597,7 @@ class AgentToolRouter(
 
     private fun isSensitiveTool(toolName: String): Boolean {
         val sensitiveTools = listOf(
-            "open_app", "click_text", "type_text", "open_browser", "tap_xy", "write_patch", "ssh"
+            "open_app", "click_text", "type_text", "open_browser", "tap_xy", "write_patch", "ssh", "system_setting"
         )
         return sensitiveTools.contains(toolName)
     }
@@ -641,5 +649,184 @@ class AgentToolRouter(
             TelegramApprovalStore.pendingApprovals.remove(taskId)
             return@withContext false
         }
+    }
+}
+
+private object SecureSettingsHelper {
+    private const val MAX_HISTORY_ENTRIES = 50
+
+    fun hasWriteSecureSettings(context: Context): Boolean {
+        return ContextCompat.checkSelfPermission(
+            context,
+            Manifest.permission.WRITE_SECURE_SETTINGS
+        ) == PackageManager.PERMISSION_GRANTED
+    }
+
+    private fun historyFile(context: Context): File {
+        val preferredDir = File(Environment.getExternalStorageDirectory(), ".agent")
+        val baseDir = if (preferredDir.exists() || preferredDir.mkdirs()) {
+            preferredDir
+        } else {
+            context.filesDir
+        }
+        return File(baseDir, "settings_history.json")
+    }
+
+    private fun readHistory(context: Context): JSONArray {
+        val file = historyFile(context)
+        if (!file.exists()) return JSONArray()
+        return runCatching {
+            JSONArray(file.readText().ifBlank { "[]" })
+        }.getOrDefault(JSONArray())
+    }
+
+    private fun writeHistory(context: Context, array: JSONArray) {
+        val trimmed = JSONArray()
+        val startIdx = (array.length() - MAX_HISTORY_ENTRIES).coerceAtLeast(0)
+        for (i in startIdx until array.length()) {
+            trimmed.put(array.get(i))
+        }
+        runCatching {
+            historyFile(context).writeText(trimmed.toString(2))
+        }
+    }
+
+    fun getSetting(context: Context, table: String, key: String): String {
+        val resolver = context.contentResolver
+        return when (table.lowercase()) {
+            "secure" -> Settings.Secure.getString(resolver, key) ?: "<null>"
+            "global" -> Settings.Global.getString(resolver, key) ?: "<null>"
+            "system" -> Settings.System.getString(resolver, key) ?: "<null>"
+            else -> "Error: Unsupported settings table '$table'. Use secure, global, or system."
+        }
+    }
+
+    private fun putRaw(context: Context, table: String, key: String, value: String?): Boolean {
+        val resolver = context.contentResolver
+        return when (table.lowercase()) {
+            "secure" -> Settings.Secure.putString(resolver, key, value)
+            "global" -> Settings.Global.putString(resolver, key, value)
+            "system" -> Settings.System.putString(resolver, key, value)
+            else -> false
+        }
+    }
+
+    fun execute(context: Context, rawArg: String): String {
+        val parsed = parseArgs(rawArg)
+        val action = parsed.optString("action", "get").lowercase()
+        val table = parsed.optString("table", "global").lowercase()
+        val key = parsed.optString("key", "").trim()
+
+        if (action == "rollback") {
+            return rollbackLastChange(context, key.ifBlank { null })
+        }
+
+        if (key.isEmpty()) {
+            return "Error: Missing 'key' in system_setting ARG."
+        }
+
+        if (action == "get") {
+            val current = getSetting(context, table, key)
+            return "[$table/$key] = $current"
+        }
+
+        if (!hasWriteSecureSettings(context)) {
+            return "Error: Missing WRITE_SECURE_SETTINGS permission. Grant via ADB/Shizuku: pm grant ${context.packageName} android.permission.WRITE_SECURE_SETTINGS"
+        }
+
+        val previousValue = getSetting(context, table, key)
+        val previousNullable = if (previousValue == "<null>") null else previousValue
+
+        return when (action) {
+            "put", "set" -> {
+                if (!parsed.has("value")) {
+                    return "Error: Missing 'value' for action '$action'."
+                }
+                val newValue = parsed.optString("value")
+                val ok = putRaw(context, table, key, newValue)
+                if (!ok) {
+                    return "Error: Failed to write [$table/$key] = '$newValue'."
+                }
+                recordHistory(context, table, key, previousNullable, newValue)
+                "Updated [$table/$key]: '$previousValue' -> '$newValue'"
+            }
+            "delete", "clear" -> {
+                val ok = putRaw(context, table, key, null)
+                if (!ok) {
+                    return "Error: Failed to clear [$table/$key]."
+                }
+                recordHistory(context, table, key, previousNullable, null)
+                "Cleared [$table/$key] (previous value: '$previousValue')"
+            }
+            else -> "Error: Unsupported action '$action'. Use get, put, delete, or rollback."
+        }
+    }
+
+    private fun recordHistory(
+        context: Context,
+        table: String,
+        key: String,
+        oldValue: String?,
+        newValue: String?
+    ) {
+        val arr = readHistory(context)
+        val entry = JSONObject()
+            .put("timestamp", System.currentTimeMillis())
+            .put("table", table)
+            .put("key", key)
+            .put("old_value", oldValue ?: JSONObject.NULL)
+            .put("new_value", newValue ?: JSONObject.NULL)
+        arr.put(entry)
+        writeHistory(context, arr)
+    }
+
+    private fun rollbackLastChange(context: Context, targetKey: String?): String {
+        if (!hasWriteSecureSettings(context)) {
+            return "Error: Missing WRITE_SECURE_SETTINGS permission."
+        }
+        val arr = readHistory(context)
+        if (arr.length() == 0) {
+            return "No recorded setting changes available to roll back."
+        }
+
+        for (i in arr.length() - 1 downTo 0) {
+            val item = arr.getJSONObject(i)
+            val key = item.optString("key")
+            if (targetKey != null && !key.equals(targetKey, ignoreCase = true)) {
+                continue
+            }
+            val table = item.optString("table", "global")
+            val oldValue = if (item.isNull("old_value")) null else item.optString("old_value")
+            val ok = putRaw(context, table, key, oldValue)
+            if (!ok) {
+                return "Error: Failed to roll back [$table/$key]."
+            }
+            val updated = JSONArray()
+            for (j in 0 until arr.length()) {
+                if (j != i) updated.put(arr.get(j))
+            }
+            writeHistory(context, updated)
+            return "Rolled back [$table/$key] to '${oldValue ?: "<null>"}'."
+        }
+
+        return if (targetKey != null) {
+            "No history entry found for key '$targetKey'."
+        } else {
+            "No recorded setting changes available to roll back."
+        }
+    }
+
+    private fun parseArgs(rawArg: String): JSONObject {
+        val trimmed = rawArg.trim()
+        if (trimmed.startsWith("{")) {
+            return runCatching { JSONObject(trimmed) }.getOrElse { JSONObject() }
+        }
+        val parts = trimmed.split(Regex("\\s+"), limit = 4)
+        val obj = JSONObject()
+        if (parts.isNotEmpty() && parts[0].isNotBlank()) obj.put("table", parts[0])
+        if (parts.size >= 2 && parts[1].isNotBlank()) obj.put("action", parts[1])
+        if (parts.size >= 3 && parts[2].isNotBlank()) obj.put("key", parts[2])
+        if (parts.size >= 4) obj.put("value", parts[3])
+        return obj
     }
 }
