@@ -69,6 +69,7 @@ android {
     buildFeatures {
         compose = true
         buildConfig = true
+        aidl = true
     }
 
     compileOptions {
@@ -99,6 +100,11 @@ dependencies {
     implementation(libs.androidx.appcompat)
     implementation(libs.androidx.core.ktx)
     implementation(libs.material)
+
+    // Shizuku Client API & ContentProvider
+    val shizukuVersion = "13.1.5"
+    implementation("dev.rikka.shizuku:api:$shizukuVersion")
+    implementation("dev.rikka.shizuku:provider:$shizukuVersion")
 
     // Jetpack Compose BOM
     implementation(platform("androidx.compose:compose-bom:2026.02.00"))
@@ -144,6 +150,5 @@ dependencies {
     debugImplementation("androidx.compose.ui:ui-tooling")
     debugImplementation("androidx.compose.ui:ui-test-manifest")
     implementation("io.modelcontextprotocol:kotlin-sdk:0.16.0") // Use the latest stable version
-    implementation ("androidx.work:work-runtime-ktx:2.9.1")
-
+    implementation("androidx.work:work-runtime-ktx:2.9.1")
 }
