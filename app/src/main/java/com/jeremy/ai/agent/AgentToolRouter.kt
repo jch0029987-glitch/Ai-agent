@@ -84,12 +84,17 @@ class AgentToolRouter(
                         "Error: Shell command argument is missing."
                     } else {
                         ShellSessionManager.appContext = context.applicationContext
-                        ShellSessionManager.executeCommand(
-                            context = context,
-                            chatId = TelegramChatContext.activeChatId ?: 0L,
-                            command = argValue,
-                            timeoutSeconds = 45L
-                        )
+                        val shizukuOut = ShizukuBridge.executeCommand(argValue, context, timeoutSeconds = 45L)
+                        if (shizukuOut != null) {
+                            shizukuOut
+                        } else {
+                            ShellSessionManager.executeCommand(
+                                context = context,
+                                chatId = TelegramChatContext.activeChatId ?: 0L,
+                                command = argValue,
+                                timeoutSeconds = 45L
+                            )
+                        }
                     }
                 }
                 "network_scan" -> {
@@ -338,7 +343,7 @@ class AgentToolRouter(
         }
     }
 
-    private fun runDumpsys(rawArg: String): String {
+    private suspend fun runDumpsys(rawArg: String): String {
         val trimmed = rawArg.trim()
         val parsedService = if (trimmed.startsWith("{")) {
             runCatching { JSONObject(trimmed).optString("service", "") }.getOrDefault("")
@@ -362,16 +367,21 @@ class AgentToolRouter(
         }
 
         return try {
-            val process = ProcessBuilder("dumpsys", service)
-                .redirectErrorStream(true)
-                .start()
-            val output = process.inputStream.bufferedReader().use { it.readText() }
-            val finished = process.waitFor(10, TimeUnit.SECONDS)
-            if (!finished) {
-                process.destroyForcibly()
-                return "Error: dumpsys '$service' timed out after 10s."
+            val shizukuOut = ShizukuBridge.executeCommand("/system/bin/dumpsys $service", context, timeoutSeconds = 10L)
+            val cleaned = if (shizukuOut != null) {
+                shizukuOut.trim()
+            } else {
+                val process = ProcessBuilder("/system/bin/dumpsys", service)
+                    .redirectErrorStream(true)
+                    .start()
+                val output = process.inputStream.bufferedReader().use { it.readText() }
+                val finished = process.waitFor(10, TimeUnit.SECONDS)
+                if (!finished) {
+                    process.destroyForcibly()
+                    return "Error: dumpsys '$service' timed out after 10s."
+                }
+                output.trim()
             }
-            val cleaned = output.trim()
             if (cleaned.isBlank()) {
                 "No output from dumpsys $service."
             } else {
