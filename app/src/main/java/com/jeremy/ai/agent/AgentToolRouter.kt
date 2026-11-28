@@ -146,6 +146,9 @@ class AgentToolRouter(
                 "system_setting" -> {
                     SecureSettingsHelper.execute(context, argValue)
                 }
+                "dumpsys" -> {
+                    runDumpsys(argValue)
+                }
                 "open_browser" -> {
                     val url = if (argValue.isNotEmpty()) argValue else "https://google.com"
                     DeviceTools.openBrowser(context, url)
@@ -332,6 +335,50 @@ class AgentToolRouter(
             "Tool: $toolName\nResult: $readableResult"
         } catch (e: Exception) {
             "Execution Error: ${e.localizedMessage}\n\nRaw Output:\n$rawOutput"
+        }
+    }
+
+    private fun runDumpsys(rawArg: String): String {
+        val trimmed = rawArg.trim()
+        val parsedService = if (trimmed.startsWith("{")) {
+            runCatching { JSONObject(trimmed).optString("service", "") }.getOrDefault("")
+        } else {
+            trimmed.split(Regex("\\s+")).firstOrNull().orEmpty()
+        }.trim()
+
+        val service = parsedService.ifBlank { "battery" }.lowercase()
+        val allowedServices = setOf(
+            "battery",
+            "batterystats",
+            "meminfo",
+            "activity",
+            "window",
+            "procstats",
+            "deviceidle",
+            "package"
+        )
+        if (service !in allowedServices) {
+            return "Error: Unsupported dumpsys service '$service'. Allowed: ${allowedServices.joinToString(", ")}."
+        }
+
+        return try {
+            val process = ProcessBuilder("dumpsys", service)
+                .redirectErrorStream(true)
+                .start()
+            val output = process.inputStream.bufferedReader().use { it.readText() }
+            val finished = process.waitFor(10, TimeUnit.SECONDS)
+            if (!finished) {
+                process.destroyForcibly()
+                return "Error: dumpsys '$service' timed out after 10s."
+            }
+            val cleaned = output.trim()
+            if (cleaned.isBlank()) {
+                "No output from dumpsys $service."
+            } else {
+                cleaned.take(3000)
+            }
+        } catch (e: Exception) {
+            "Error running dumpsys $service: ${e.localizedMessage ?: e.javaClass.simpleName}"
         }
     }
 
@@ -597,7 +644,7 @@ class AgentToolRouter(
 
     private fun isSensitiveTool(toolName: String): Boolean {
         val sensitiveTools = listOf(
-            "open_app", "click_text", "type_text", "open_browser", "tap_xy", "write_patch", "ssh", "system_setting"
+            "open_app", "click_text", "type_text", "open_browser", "tap_xy", "write_patch", "ssh", "system_setting", "dumpsys"
         )
         return sensitiveTools.contains(toolName)
     }
