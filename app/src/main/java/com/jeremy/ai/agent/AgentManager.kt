@@ -46,6 +46,7 @@ class AgentManager(private val context: Context) {
     private var engine: Engine? = null
     private var isInitialized = false
     private var loadedModelName: String? = null
+    private var activeBackendName: String? = null
 
     private var cachedMarkdownContext: String = ""
     private var lastMarkdownLoadMs: Long = 0L
@@ -73,7 +74,7 @@ class AgentManager(private val context: Context) {
             "open", "launch", "click", "tap", "type", "get", "check", "list", "show",
             "press", "find", "read", "patch", "write", "task:", "execute", "git", "shell",
             "search", "alarm", "schedule", "remind", "cron", "scan", "network", "adb",
-            "roku", "kodi", "ssh", "ping", "tv", "pair"
+            "roku", "kodi", "ssh", "ping", "tv", "pair", "setting", "settings"
         )
     }
 
@@ -87,7 +88,8 @@ class AgentManager(private val context: Context) {
         val settings = AiBackendConfig.currentSettings
         val activeModel = settings.ollamaCoderModel.ifBlank { "qwen2.5-coder:3b" }
         val liteRtState = if (isInitialized && engine != null) {
-            "ready (${loadedModelName ?: DEFAULT_LITERT_MODEL})"
+            val backendLabel = activeBackendName?.let { " [$it]" }.orEmpty()
+            "ready (${loadedModelName ?: DEFAULT_LITERT_MODEL}$backendLabel)"
         } else {
             "unloaded"
         }
@@ -145,7 +147,7 @@ class AgentManager(private val context: Context) {
 
         val initResult = setupEngineFromStorage(targetModel)
         return if (initResult.isSuccess) {
-            "Switched to **Local LiteRT-LM** and loaded `$targetModel`."
+            "Switched to **Local LiteRT-LM** and loaded `$targetModel` [${activeBackendName ?: "unknown"}]."
         } else {
             "Switched to **Local LiteRT-LM**, but failed to load `$targetModel`: ${initResult.exceptionOrNull()?.localizedMessage}"
         }
@@ -180,6 +182,7 @@ class AgentManager(private val context: Context) {
                         showToast("Model file not found at $fileName")
                         isInitialized = false
                         loadedModelName = null
+                        activeBackendName = null
                         return@withContext Result.failure(IllegalArgumentException(errorMsg))
                     }
 
@@ -189,12 +192,13 @@ class AgentManager(private val context: Context) {
                         showToast("Permission denied reading $fileName")
                         isInitialized = false
                         loadedModelName = null
+                        activeBackendName = null
                         return@withContext Result.failure(SecurityException(errorMsg))
                     }
 
                     shutdownEngineInternal()
 
-                    var activeBackendName = "GPU (Vulkan/OpenCL)"
+                    var chosenBackend = "GPU (Vulkan/OpenCL)"
 
                     val newEngine = try {
                         Log.i(TAG, "Initializing LiteRT-LM Engine on GPU backend...")
@@ -208,7 +212,7 @@ class AgentManager(private val context: Context) {
                         gpuEngine
                     } catch (eGpu: Exception) {
                         Log.w(TAG, "GPU backend unavailable or graph delegation failed, falling back to CPU", eGpu)
-                        activeBackendName = "CPU"
+                        chosenBackend = "CPU"
                         val cpuEngine = Engine(
                             EngineConfig(
                                 modelPath = targetFile.absolutePath,
@@ -222,9 +226,10 @@ class AgentManager(private val context: Context) {
                     engine = newEngine
                     isInitialized = true
                     loadedModelName = fileName
+                    activeBackendName = chosenBackend
 
-                    Log.i(TAG, "LiteRT-LM successfully initialized on $activeBackendName!")
-                    showToast("LiteRT-LM Engine Ready [$activeBackendName]")
+                    Log.i(TAG, "LiteRT-LM successfully initialized on $chosenBackend!")
+                    showToast("LiteRT-LM Engine Ready [$chosenBackend]")
 
                     Result.success(true)
                 } catch (e: Exception) {
@@ -232,6 +237,7 @@ class AgentManager(private val context: Context) {
                     showToast("Engine Init Failed: ${e.localizedMessage}")
                     isInitialized = false
                     loadedModelName = null
+                    activeBackendName = null
                     Result.failure(e)
                 }
             }
@@ -557,7 +563,8 @@ class AgentManager(private val context: Context) {
                       * roku -> ARG JSON: {"device":"roku","action":"active_app"}
                       * kodi -> ARG JSON: {"device":"kodi","method":"Player.GetActivePlayers"}
                       * ssh -> ARG JSON: {"host":"...","command":"..."}
-                    - Local Pixel screen/shell/file tools:
+                    - Local Pixel screen/shell/file/settings tools:
+                      * system_setting -> ARG JSON: {"table":"global","action":"get|put|delete|rollback","key":"...","value":"..."}
                       * get_screen_content (no ARG needed; reads local phone screen only, not TV/ADB)
                       * execute_shell, patch_file, search_code, read_file, write_patch, open_browser, github_get_issues, get_recent_notifications, open_app, get_installed_apps, click_text, type_text, tap_xy, scroll_down, scroll_up, go_home, go_back, schedule_alarm, add_cron_job, finish
                     - Once a tool returns the requested information, immediately call TOOL: finish with ARG: a clear answer. Never repeat a tool that already succeeded or returned an error.
@@ -610,6 +617,7 @@ class AgentManager(private val context: Context) {
                     "cron", "cron_job" -> "add_cron_job"
                     "scan", "network", "lan_scan" -> "network_scan"
                     "ping", "services", "health_check" -> "service_ping"
+                    "setting", "settings", "secure_setting" -> "system_setting"
                     else -> rawToolName
                 }
 
@@ -694,6 +702,7 @@ class AgentManager(private val context: Context) {
                 engine = null
                 isInitialized = false
                 loadedModelName = null
+                activeBackendName = null
             }
         }
     }
