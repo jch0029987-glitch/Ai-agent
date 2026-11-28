@@ -193,6 +193,10 @@ class TelegramBridgeService : Service() {
                     val update = results.getJSONObject(i)
                     lastUpdateId = update.getLong("update_id")
 
+                    if (update.has("callback_query")) {
+                        handleCallbackQuery(update.getJSONObject("callback_query"), botToken, allowedUserId)
+                    }
+
                     if (update.has("message")) {
                         val message = update.getJSONObject("message")
                         val fromUser = message.optJSONObject("from")
@@ -227,6 +231,88 @@ class TelegramBridgeService : Service() {
                     delay(5000)
                 }
             }
+        }
+    }
+
+    private suspend fun handleCallbackQuery(
+        callbackQuery: JSONObject,
+        botToken: String,
+        allowedUserId: String
+    ) {
+        val callbackId = callbackQuery.optString("id", "")
+        val fromUser = callbackQuery.optJSONObject("from")
+        val senderId = fromUser?.optLong("id")?.toString() ?: ""
+        val data = callbackQuery.optString("data", "").trim()
+        val chatIdLong = callbackQuery.optJSONObject("message")?.optJSONObject("chat")?.optLong("id")
+
+        Log.i(TAG, "Received callback_query data='$data' from sender=$senderId")
+
+        if (allowedUserId.isNotBlank() && senderId != allowedUserId) {
+            if (callbackId.isNotBlank()) {
+                answerCallbackQuery(botToken, callbackId, "Unauthorized user", showAlert = true)
+            }
+            return
+        }
+
+        val (approved, taskId) = when {
+            data.startsWith("approve:") -> true to data.removePrefix("approve:").trim()
+            data.startsWith("deny:") -> false to data.removePrefix("deny:").trim()
+            else -> {
+                if (callbackId.isNotBlank()) {
+                    answerCallbackQuery(botToken, callbackId, "Unhandled action")
+                }
+                return
+            }
+        }
+
+        val future = TelegramApprovalStore.pendingApprovals.remove(taskId)
+        val completed = future?.complete(approved) == true
+
+        if (callbackId.isNotBlank()) {
+            val toastText = when {
+                completed && approved -> "Approved"
+                completed && !approved -> "Denied"
+                else -> "Approval expired or already handled"
+            }
+            answerCallbackQuery(botToken, callbackId, toastText)
+        }
+
+        if (chatIdLong != null && chatIdLong != 0L) {
+            val statusMsg = when {
+                completed && approved -> "✅ Approved action (`$taskId`)."
+                completed && !approved -> "⛔ Denied action (`$taskId`)."
+                else -> "⚠️ No pending approval found for `$taskId`."
+            }
+            sendTelegramResponse(chatIdLong.toString(), statusMsg, botToken)
+        }
+    }
+
+    private suspend fun answerCallbackQuery(
+        botToken: String,
+        callbackQueryId: String,
+        text: String,
+        showAlert: Boolean = false
+    ) {
+        try {
+            val payload = JSONObject().apply {
+                put("callback_query_id", callbackQueryId)
+                put("text", text)
+                put("show_alert", showAlert)
+            }.toString()
+
+            val resp = postTelegramWithRetry(
+                url = "https://api.telegram.org/bot$botToken/answerCallbackQuery",
+                jsonPayload = payload,
+                maxAttempts = 2,
+                baseDelayMs = 400L
+            )
+            if (!resp.status.isSuccess()) {
+                Log.w(TAG, "answerCallbackQuery failed (${resp.status.value}): ${resp.bodyAsText()}")
+            }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to answer callback query", e)
         }
     }
 
