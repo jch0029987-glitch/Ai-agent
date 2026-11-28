@@ -74,7 +74,8 @@ class AgentManager(private val context: Context) {
             "open", "launch", "click", "tap", "type", "get", "check", "list", "show",
             "press", "find", "read", "patch", "write", "task:", "execute", "git", "shell",
             "search", "alarm", "schedule", "remind", "cron", "scan", "network", "adb",
-            "roku", "kodi", "ssh", "ping", "tv", "pair", "setting", "settings", "rollback"
+            "roku", "kodi", "ssh", "ping", "tv", "pair", "setting", "settings", "rollback",
+            "dumpsys"
         )
     }
 
@@ -565,6 +566,7 @@ class AgentManager(private val context: Context) {
                       * ssh -> ARG JSON: {"host":"...","command":"..."}
                     - Local Pixel screen/shell/file/settings tools:
                       * system_setting -> ARG JSON: {"table":"global","action":"get","key":"stay_on_while_plugged_in"} or {"table":"global","action":"put","key":"stay_on_while_plugged_in","value":"3"} or {"action":"rollback"}
+                      * dumpsys -> ARG JSON: {"service":"battery"} (allowed: battery, batterystats, meminfo, activity, window, procstats, deviceidle, package)
                       * get_screen_content (no ARG needed; reads local phone screen only, not TV/ADB)
                       * execute_shell, patch_file, search_code, read_file, write_patch, open_browser, github_get_issues, get_recent_notifications, open_app, get_installed_apps, click_text, type_text, tap_xy, scroll_down, scroll_up, go_home, go_back, schedule_alarm, add_cron_job, finish
                     - Once a tool returns the requested information, immediately call TOOL: finish with ARG: a clear answer. Never repeat a tool that already succeeded or returned an error.
@@ -618,6 +620,7 @@ class AgentManager(private val context: Context) {
                     "scan", "network", "lan_scan" -> "network_scan"
                     "ping", "services", "health_check" -> "service_ping"
                     "setting", "settings", "secure_setting" -> "system_setting"
+                    "dump", "dump_service" -> "dumpsys"
                     else -> rawToolName
                 }
 
